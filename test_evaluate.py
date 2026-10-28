@@ -18,6 +18,11 @@ class EvaluationTest(unittest.TestCase):
         for name in ('accuracy', 'precision', 'recall', 'f1', 'false_positive_rate'):
             self.assertEqual(result[name], 0.5)
         self.assertEqual(result['roc_auc'], 0.75)
+        self.assertEqual(result['balanced_accuracy'], 0.5)
+        self.assertEqual(result['matthews_correlation'], 0.0)
+        self.assertAlmostEqual(result['brier_score'], 0.325)
+        self.assertAlmostEqual(result['confidence_intervals_95']['accuracy'][0], 0.150038989, places=7)
+        self.assertAlmostEqual(result['confidence_intervals_95']['accuracy'][1], 0.849961011, places=7)
 
     def test_single_class_challenge_does_not_claim_auc_or_false_positive_rate(self):
         from evaluate import classification_metrics
@@ -25,6 +30,16 @@ class EvaluationTest(unittest.TestCase):
         self.assertEqual(result['recall'], 0.5)
         self.assertIsNone(result['roc_auc'])
         self.assertIsNone(result['false_positive_rate'])
+        self.assertIsNone(result['confidence_intervals_95']['false_positive_rate'])
+        self.assertIsNone(result['balanced_accuracy'])
+
+    def test_zero_observed_false_positives_still_have_nonzero_uncertainty(self):
+        from evaluate import classification_metrics
+        result = classification_metrics([0] * 100, [0.1] * 100, 0.5)
+        self.assertEqual(result['false_positive_rate'], 0.0)
+        self.assertAlmostEqual(result['confidence_intervals_95']['false_positive_rate'][1],
+                               0.036993498, places=7)
+        self.assertIsNone(result['recall'])
 
     def test_real_model_evaluates_held_out_splits_without_reading_training_rows(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -58,6 +73,12 @@ class EvaluationTest(unittest.TestCase):
             self.assertEqual(report['splits']['challenge']['rows'], 6)
             self.assertIsNone(report['splits']['challenge']['roc_auc'])
             self.assertIn('challenge', (report_dir / 'evaluation.md').read_text())
+            self.assertEqual(report['splits']['test']['skipped_unlabeled'], 2)
+            self.assertTrue(report['splits']['test']['dataset_sha256'])
+            self.assertIn('python', report['software'])
+            self.assertTrue((report_dir / 'test_curves.png').is_file())
+            self.assertTrue((report_dir / 'test_curves.svg').is_file())
+            self.assertTrue((report_dir / 'challenge_confusion.png').is_file())
 
 
 if __name__ == '__main__':

@@ -20,6 +20,7 @@ class TrainingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             shutil.copy2(ROOT / 'train.py', folder / 'train.py')
+            shutil.copy2(ROOT / 'experiment.py', folder / 'experiment.py')
             dataset = folder / 'data/datasets/PDF/sample_train.jsonl'
             dataset.parent.mkdir(parents=True)
             extractor = PEFeatureExtractor()

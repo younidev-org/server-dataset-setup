@@ -1,59 +1,40 @@
-"""Evaluate a trained binary model on held-out test and shared challenge features."""
+"""Evaluate LightGBM or XGBoost on held-out data with reproducible scientific reports."""
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
+import inspect
 from pathlib import Path
+import tempfile
+import time
 
 import lightgbm as lgb
 import numpy as np
-from sklearn.metrics import average_precision_score, roc_auc_score
 from thrember import PEFeatureExtractor
 
+from experiment import input_manifest, manifest_sha256, sha256_file, software_versions
+from reporting import classification_metrics, markdown_report, save_figures, save_predictions
 from train import training_records
 
 ROOT = Path(__file__).resolve().parent
 
 
-def classification_metrics(labels, probabilities, threshold):
-    labels = np.asarray(labels)
-    probabilities = np.asarray(probabilities)
-    predicted = probabilities >= threshold
-    tn = int(np.sum((labels == 0) & ~predicted))
-    fp = int(np.sum((labels == 0) & predicted))
-    fn = int(np.sum((labels == 1) & ~predicted))
-    tp = int(np.sum((labels == 1) & predicted))
-
-    def ratio(numerator, denominator):
-        return numerator / denominator if denominator else None
-
-    both_classes = bool(tn + fp) and bool(tp + fn)
-    return {
-        'rows': len(labels), 'labels': {'0': tn + fp, '1': tp + fn},
-        'confusion': {'tn': tn, 'fp': fp, 'fn': fn, 'tp': tp},
-        'accuracy': ratio(tp + tn, len(labels)),
-        'precision': ratio(tp, tp + fp), 'recall': ratio(tp, tp + fn),
-        'f1': ratio(2 * tp, 2 * tp + fp + fn),
-        'false_positive_rate': ratio(fp, fp + tn),
-        'roc_auc': float(roc_auc_score(labels, probabilities)) if both_classes else None,
-        'average_precision': float(average_precision_score(labels, probabilities)) if both_classes else None,
-        'ranking_metrics_note': None if both_classes else 'Requires both benign and malicious labels.',
-    }
-
-
-def evaluate_split(model, extractor, paths, batch_size, threads, threshold):
+def evaluate_split(model, extractor, paths, batch_size, threads, threshold, backend='lightgbm'):
     labels, scores, batch = [], [], []
+    statistics = {'total_records': 0, 'skipped_unlabeled': 0}
 
     def predict_batch():
         features = np.asarray(batch, dtype=np.float32)
-        predictions = np.asarray(model.predict(features, num_threads=threads))
-        if predictions.ndim != 1 or not np.all(np.isfinite(predictions)) or np.any((predictions < 0) | (predictions > 1)):
-            raise ValueError('Expected finite binary model probabilities between 0 and 1')
+        if backend == 'lightgbm':
+            predictions = np.asarray(model.predict(features, num_threads=threads))
+        else:
+            predictions = np.asarray(model.inplace_predict(features))
+        if predictions.ndim != 1 or len(predictions) != len(batch) or not np.all(np.isfinite(predictions)) or np.any((predictions < 0) | (predictions > 1)):
+            raise ValueError('Expected one finite binary probability between 0 and 1 per record')
         scores.extend(predictions.tolist())
         batch.clear()
 
-    for record in training_records(paths):
+    for record in training_records(paths, statistics):
         labels.append(record['label'])
         batch.append(extractor.process_raw_features(record))
         if len(batch) == batch_size:
@@ -62,20 +43,29 @@ def evaluate_split(model, extractor, paths, batch_size, threads, threshold):
         predict_batch()
     if not labels:
         raise ValueError(f'No labeled evaluation records in {paths}')
-    return classification_metrics(labels, scores, threshold)
+    metrics = classification_metrics(labels, scores, threshold)
+    metrics.update(statistics)
+    return metrics, labels, scores
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--backend', choices=['lightgbm', 'xgboost'], default='lightgbm')
     parser.add_argument('--data-dir', type=Path, default=ROOT / 'data/datasets')
-    parser.add_argument('--model', type=Path, default=ROOT / 'data/models/ember2024/model.txt')
-    parser.add_argument('--report-dir', type=Path, default=ROOT / 'data/reports')
+    parser.add_argument('--model', type=Path)
+    parser.add_argument('--report-dir', type=Path)
     parser.add_argument('--threshold', type=float, default=0.5)
     parser.add_argument('--batch-size', type=int, default=1024)
     parser.add_argument('--threads', type=int, default=4)
     args = parser.parse_args()
+    started = time.perf_counter()
     if not 0 <= args.threshold <= 1 or args.batch_size < 1 or args.threads < 1:
         parser.error('threshold must be between 0 and 1; batch-size and threads must be positive')
+    if args.model is None:
+        args.model = ROOT / 'data/models' / ('ember2024/model.txt' if args.backend == 'lightgbm' else 'ember2024-xgboost/model.ubj')
+    if args.report_dir is None:
+        # Preserve existing LightGBM report paths; keep XGBoost results separate.
+        args.report_dir = ROOT / 'data/reports' / ('' if args.backend == 'lightgbm' else 'xgboost')
     data = args.data_dir.resolve()
     split_paths = {
         'test': sorted(path for path in data.rglob('*_test.jsonl') if path.is_file() and 'challenge' not in path.name.lower()),
@@ -84,50 +74,83 @@ def main():
     for split, paths in split_paths.items():
         if not paths:
             parser.error(f'No {split} JSONL files under {data}; run the download command first')
-    model = lgb.Booster(model_file=str(args.model))
+    if args.backend == 'lightgbm':
+        model = lgb.Booster(model_file=str(args.model))
+        num_features = model.num_feature()
+    else:
+        import xgboost as xgb
+        model = xgb.Booster()
+        model.load_model(args.model)
+        model.set_param({'nthread': args.threads, 'device': 'cpu'})
+        num_features = model.num_features()
     extractor = PEFeatureExtractor()
-    if model.num_feature() != extractor.dim:
+    if num_features != extractor.dim:
         parser.error('Model feature count does not match the bundled feature extractor')
+    model_hash = sha256_file(args.model)
+    extractor_hash = sha256_file(Path(inspect.getfile(PEFeatureExtractor)))
+    training, training_status = None, 'legacy_or_missing_unverified'
+    metadata_path = args.model.parent / 'training.json'
+    if metadata_path.is_file():
+        metadata = json.loads(metadata_path.read_text())
+        if metadata.get('model_sha256'):
+            if metadata['model_sha256'] != model_hash or metadata.get('backend') != args.backend:
+                parser.error('training.json does not match this model hash/backend; use the matching model directory')
+            if metadata.get('feature_extractor_sha256') != extractor_hash:
+                parser.error('Installed feature extractor differs from the one used for training')
+            training, training_status = metadata, 'verified_model_hash'
     report = {
-        'generated_at': datetime.now(timezone.utc).isoformat(),
-        'model': str(args.model.resolve()),
-        'model_sha256': hashlib.sha256(args.model.read_bytes()).hexdigest(),
-        'threshold': args.threshold,
+        'schema_version': 2, 'generated_at': datetime.now(timezone.utc).isoformat(),
+        'backend': args.backend, 'model': str(args.model.resolve()), 'model_sha256': model_hash,
+        'threshold': args.threshold, 'feature_count': extractor.dim,
+        'feature_extractor_sha256': extractor_hash,
+        'evaluator_sha256': sha256_file(Path(__file__)),
+        'software': software_versions(), 'training': training, 'training_metadata_status': training_status,
+        'protocol': {'threshold_selection': 'Fixed before evaluation; no held-out tuning',
+                     'confidence_intervals': 'Two-sided 95% Wilson score intervals for binomial rates',
+                     'prediction_batch_size': args.batch_size, 'threads': args.threads},
         'notes': [
-            'Model is evaluated without fitting or selecting a threshold on held-out data.',
-            'Challenge is the shared upstream set, not a PDF-only benchmark.',
-            'Rows labeled null or -1 are excluded. Other invalid labels fail evaluation.',
-            'Null metrics are undefined for the available classes or predictions.',
+            'Only training files are used for fitting. Test and challenge are evaluated separately; no held-out threshold tuning or early stopping is performed.',
+            'Test discovery includes all *_test.jsonl files under the selected data directory; it is PDF-only only when those files contain PDF records. Input manifests identify the actual corpus.',
+            'Challenge is the shared upstream set, not a PDF-only benchmark. It is an out-of-distribution stress test for a PDF-trained model.',
+            'Challenge precision/accuracy reflect that selected challenge population and must not be interpreted as deployment precision or population-wide accuracy.',
+            'Rows labeled null or -1 are excluded and counted. Other invalid labels fail evaluation.',
+            'Null/N/A denotes an undefined metric, including ROC-AUC and FPR on an all-malicious challenge set.',
+            'Wilson intervals assume independent Bernoulli trials. Duplicate samples, shared malware families, and temporal correlations can make these intervals too narrow; they do not establish future deployment performance.',
+            'ROC-AUC, average precision, F1, MCC, Brier score and log loss are point estimates; no uncertainty interval or significance test is computed for them.',
+            'Average precision is a step-weighted summary, not trapezoidal PR area; its random-ranking baseline is malicious prevalence.',
+            'Class weighting can distort probability calibration. Brier score, log loss and reliability plots assess raw, uncalibrated probabilities; no calibration is fitted on held-out data.',
+            'These are fixed-hyperparameter, single-seed baselines, not an optimized or multi-seed benchmark. LightGBM and XGBoost have different capacity and feature treatment; identical boosting-round counts do not imply equal models or compute budgets.',
         ],
         'splits': {},
     }
-    for split, paths in split_paths.items():
-        print(f'Evaluating {split}: {len(paths)} files...', flush=True)
-        metrics = evaluate_split(model, extractor, paths, args.batch_size, args.threads, args.threshold)
-        metrics['files'] = [str(path.relative_to(data)) for path in paths]
-        report['splits'][split] = metrics
-    lines = ['# EMBER2024 evaluation', '', f'Generated: {report["generated_at"]}', '',
-             f'Model SHA-256: `{report["model_sha256"]}`', '',
-             f'Probability threshold: {args.threshold}', '',
-             '| Split | Rows | Accuracy | Precision | Recall / detection rate | F1 | FPR | ROC-AUC | Average precision |',
-             '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
-    for split, metrics in report['splits'].items():
-        values = [str(metrics['rows'])]
-        for key in ('accuracy', 'precision', 'recall', 'f1', 'false_positive_rate', 'roc_auc', 'average_precision'):
-            values.append('N/A' if metrics[key] is None else f'{metrics[key]:.6f}')
-        lines.append('| ' + ' | '.join([split] + values) + ' |')
-        print(f'{split}: {json.dumps(metrics)}', flush=True)
-    lines += ['', '| Split | TN | FP | FN | TP |', '| --- | ---: | ---: | ---: | ---: |']
-    for split, metrics in report['splits'].items():
-        lines.append('| ' + ' | '.join([split] + [str(metrics['confusion'][key]) for key in ('tn', 'fp', 'fn', 'tp')]) + ' |')
-    lines += ['', *report['notes'], '']
     args.report_dir.mkdir(parents=True, exist_ok=True)
-    for name, content in [('evaluation.json', json.dumps(report, indent=2, allow_nan=False) + '\n'),
-                          ('evaluation.md', '\n'.join(lines))]:
-        target = args.report_dir / name
-        temporary = target.with_suffix(target.suffix + '.tmp')
-        temporary.write_text(content)
-        temporary.replace(target)
+    # Prepare the entire report before replacing outputs; publish evaluation.json last.
+    with tempfile.TemporaryDirectory(prefix='report-', dir=args.report_dir) as temporary:
+        staging = Path(temporary)
+        for split, paths in split_paths.items():
+            print(f'Evaluating {split}: {len(paths)} files...', flush=True)
+            manifest = input_manifest(paths, data)
+            split_started = time.perf_counter()
+            metrics, labels, scores = evaluate_split(model, extractor, paths, args.batch_size, args.threads, args.threshold, args.backend)
+            metrics['evaluation_seconds'] = time.perf_counter() - split_started
+            if input_manifest(paths, data) != manifest:
+                raise ValueError('Evaluation inputs changed during this run; report not published')
+            metrics['input_manifest'] = manifest
+            metrics['dataset_sha256'] = manifest_sha256(manifest)
+            metrics['files'] = [item['path'] for item in manifest]
+            metrics['calibration_bins'] = save_figures(labels, scores, metrics, split, staging)
+            save_predictions(labels, scores, staging / f'{split}_predictions.csv')
+            report['splits'][split] = metrics
+            print(f'{split}: n={metrics["rows"]}; ROC-AUC={metrics["roc_auc"]}; recall={metrics["recall"]}', flush=True)
+        if sha256_file(args.model) != model_hash:
+            raise ValueError('Model file changed during evaluation; report not published')
+        report['timing_seconds'] = time.perf_counter() - started
+        (staging / 'evaluation.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
+        (staging / 'evaluation.md').write_text(markdown_report(report))
+        for path in staging.iterdir():
+            if path.name != 'evaluation.json':
+                path.replace(args.report_dir / path.name)
+        (staging / 'evaluation.json').replace(args.report_dir / 'evaluation.json')
     print(f'Reports saved in {args.report_dir.resolve()}', flush=True)
 
 

@@ -1,10 +1,16 @@
-"""Train one benign/malicious LightGBM model on all nested *_train.jsonl files."""
+"""Train a binary LightGBM or XGBoost model on nested *_train.jsonl features."""
 
 import argparse
 from collections import Counter
+from datetime import datetime, timezone
 import json
+import inspect
 from pathlib import Path
 import tempfile
+import time
+import sys
+
+from experiment import input_manifest, manifest_sha256, sha256_file, software_versions
 
 import lightgbm as lgb
 import numpy as np
@@ -14,14 +20,18 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parent
 
 
-def training_records(paths):
+def training_records(paths, statistics=None):
     for path in paths:
         with path.open(encoding='utf-8') as stream:
             for line_number, line in enumerate(stream, 1):
                 try:
                     record = json.loads(line)
                     label = record['label']
+                    if statistics is not None:
+                        statistics['total_records'] = statistics.get('total_records', 0) + 1
                     if label is None or label == -1:
+                        if statistics is not None:
+                            statistics['skipped_unlabeled'] = statistics.get('skipped_unlabeled', 0) + 1
                         continue
                     if type(label) is not int or label not in (0, 1):
                         raise ValueError('Expected binary label 0 or 1')
@@ -32,11 +42,14 @@ def training_records(paths):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--backend', choices=['lightgbm', 'xgboost'], default='lightgbm')
     parser.add_argument('--data-dir', type=Path, default=ROOT / 'data' / 'datasets')
-    parser.add_argument('--output-dir', type=Path, default=ROOT / 'data' / 'models' / 'ember2024')
+    parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--rounds', type=int, default=500)
     parser.add_argument('--threads', type=int, default=0, help='0 uses all CPU cores')
     args = parser.parse_args()
+    started = time.perf_counter()
     if args.rounds < 1 or args.threads < 0:
         parser.error('--rounds must be positive; --threads must be nonnegative')
     data = args.data_dir.resolve()
@@ -44,12 +57,16 @@ def main():
     if not paths:
         parser.error(f'No training JSONL files (*_train.jsonl) under {data}')
     print(f'Found {len(paths)} training files; counting labeled rows...', flush=True)
-    labels = Counter(record['label'] for record in training_records(paths))
+    manifest = input_manifest(paths, data)
+    statistics = {}
+    labels = Counter(record['label'] for record in training_records(paths, statistics))
     if set(labels) != {0, 1}:
         parser.error(f'Training requires both benign (0) and malicious (1) rows: {dict(labels)}')
     rows = sum(labels.values())
     extractor = PEFeatureExtractor()
-    output = args.output_dir.resolve()
+    output = (args.output_dir or ROOT / 'data/models' / (
+        'ember2024' if args.backend == 'lightgbm' else 'ember2024-xgboost')).resolve()
+    model_name = 'model.txt' if args.backend == 'lightgbm' else 'model.ubj'
     output.mkdir(parents=True, exist_ok=True)
     print(f'Vectorizing {rows:,} rows into {extractor.dim} features.', flush=True)
     # Disk-backed vectors avoid keeping a Python list of every feature vector.
@@ -67,23 +84,55 @@ def main():
         if count != rows:
             raise ValueError('Data changed during vectorization; rerun after downloads finish')
         features.flush()
-        train_set = lgb.Dataset(features, label=targets, categorical_feature=[2, 3, 4, 5, 6, 701, 702])
-        print('Training LightGBM on all selected rows...', flush=True)
-        model = lgb.train({
-            'objective': 'binary', 'learning_rate': 0.1, 'num_leaves': 64,
-            'min_data_in_leaf': 100, 'lambda_l2': 1.0, 'is_unbalance': True,
-            'seed': 0, 'num_threads': args.threads, 'verbosity': 1,
-        }, train_set, num_boost_round=args.rounds)
-        model.save_model(str(temporary / 'model.txt'))
-        (temporary / 'model.txt').replace(output / 'model.txt')
+        print(f'Training {args.backend} on all selected rows...', flush=True)
+        fit_started = time.perf_counter()
+        if args.backend == 'lightgbm':
+            categorical = [2, 3, 4, 5, 6, 701, 702]
+            parameters = {
+                'objective': 'binary', 'learning_rate': 0.1, 'num_leaves': 64,
+                'min_data_in_leaf': 100, 'lambda_l2': 1.0, 'is_unbalance': True,
+                'seed': args.seed, 'num_threads': args.threads, 'verbosity': 1,
+            }
+            train_set = lgb.Dataset(features, label=targets, categorical_feature=categorical)
+            model = lgb.train(parameters, train_set, num_boost_round=args.rounds)
+            actual_rounds = model.current_iteration()
+        else:
+            import xgboost as xgb
+            categorical = []
+            parameters = {
+                'objective': 'binary:logistic', 'eval_metric': 'logloss',
+                'tree_method': 'hist', 'device': 'cpu', 'eta': 0.1, 'max_depth': 6,
+                'min_child_weight': 1, 'lambda': 1.0,
+                'scale_pos_weight': labels[0] / labels[1],
+                'seed': args.seed, 'nthread': args.threads,
+            }
+            train_set = xgb.DMatrix(features, label=targets, nthread=args.threads)
+            model = xgb.train(parameters, train_set, num_boost_round=args.rounds)
+            actual_rounds = model.num_boosted_rounds()
+        fit_seconds = time.perf_counter() - fit_started
+        if input_manifest(paths, data) != manifest:
+            raise ValueError('Training input files changed during this run; model not published')
+        model.save_model(str(temporary / model_name))
+        (temporary / model_name).replace(output / model_name)
         del features
     report = {
         'rows': rows, 'labels': dict(labels), 'features': extractor.dim,
         'files': [str(path.relative_to(data)) for path in paths],
         'rounds': args.rounds,
+        'actual_rounds': actual_rounds, 'backend': args.backend, 'seed': args.seed,
+        'parameters': parameters, 'categorical_feature_indices': categorical,
+        'feature_handling': 'Bundled 2568-dimensional float32 EMBER vectors; XGBoost treats all columns as numeric, LightGBM declares selected categorical indices.',
+        'input_manifest': manifest, 'dataset_sha256': manifest_sha256(manifest),
+        'model_sha256': sha256_file(output / model_name),
+        'feature_extractor_sha256': sha256_file(Path(inspect.getfile(PEFeatureExtractor))),
+        'trainer_sha256': sha256_file(Path(__file__)),
+        'software': software_versions(), 'command': sys.argv,
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+        'timing_seconds': {'fit': fit_seconds, 'total': time.perf_counter() - started},
+        **statistics,
     }
     (output / 'training.json').write_text(json.dumps(report, indent=2) + '\n')
-    print(f'Saved {output / "model.txt"} and {output / "training.json"}', flush=True)
+    print(f'Saved {output / model_name} and {output / "training.json"}', flush=True)
 
 
 if __name__ == '__main__':

@@ -9,6 +9,7 @@ export HF_HUB_DISABLE_XET=1
 export PIP_CACHE_DIR="$repo_root/data/cache/pip"
 export UV_CACHE_DIR="$repo_root/data/cache/uv"
 export MPLCONFIGDIR="$repo_root/data/cache/matplotlib"
+export XDG_CACHE_HOME="$repo_root/data/cache"
 export PYTHONPYCACHEPREFIX="$repo_root/data/cache/pycache"
 export TMPDIR="$repo_root/data/tmp"
 python_bin="$repo_root/data/venv/bin/python"
