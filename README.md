@@ -4,6 +4,9 @@ This repository distributes server setup and training scripts. Develop and publi
 changes from a development machine; the server only needs read access and pulls
 updates. Server data and generated artifacts stay local under ignored `data/`.
 
+Read [the technical guide](TECHNICAL_GUIDE.md) for report columns, model parameters,
+statistical terminology, and an example explaining precision 1.0 with 50% recall.
+
 ## Run everything from TOML
 
 After pulling the repository, one command executes the configured workflow:
