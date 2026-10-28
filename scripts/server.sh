@@ -3,7 +3,7 @@
 set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-mkdir -p data/{datasets,models/ember2024,cache,tmp,logs,archives}
+mkdir -p data/{datasets,models/ember2024,reports,cache,tmp,logs,archives}
 export HF_HOME="$repo_root/data/cache/huggingface"
 export HF_HUB_DISABLE_XET=1
 export PIP_CACHE_DIR="$repo_root/data/cache/pip"
@@ -27,7 +27,7 @@ case "$action" in
       "$python_bin" -m pip check
     fi
     ;;
-  train|download|test)
+  train|download|evaluate|test)
     if [ ! -x "$python_bin" ]; then
       echo 'Run bash scripts/server.sh setup first.' >&2
       exit 1
@@ -35,11 +35,12 @@ case "$action" in
     case "$action" in
       train) exec "$python_bin" train.py "$@" ;;
       download) exec "$python_bin" download_pdf.py "$@" ;;
+      evaluate) exec "$python_bin" evaluate.py "$@" ;;
       test) exec "$python_bin" -m unittest discover -v "$@" ;;
     esac
     ;;
   help|-h|--help)
-    echo 'Usage: bash scripts/server.sh {setup|test|download|train [options]}'
+    echo 'Usage: bash scripts/server.sh {setup|test|download|train|evaluate} [options]'
     ;;
   *) echo "Unknown action: $action" >&2; exit 2 ;;
 esac

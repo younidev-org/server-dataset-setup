@@ -40,27 +40,43 @@ class TrainingTest(unittest.TestCase):
             self.assertEqual(report['rows'], 40)
             self.assertFalse((folder / 'output').exists())
 
-    def test_downloader_requests_only_pdf_training_and_extracts_into_pdf_folder(self):
+    def test_downloader_extracts_all_splits_and_reports_sources(self):
         import download_pdf
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
-            archive = folder / 'PDF_train.zip'
-            with zipfile.ZipFile(archive, 'w') as bundle:
-                bundle.writestr('sample_PDF_train.jsonl', '{"label": 0}\n')
+            archives = {}
+            for name, member in [('PDF_train.zip', 'sample_PDF_train.jsonl'),
+                                 ('PDF_test.zip', 'sample_PDF_test.jsonl'),
+                                 ('challenge.zip', 'sample_challenge_malicious.jsonl')]:
+                archive = folder / name
+                with zipfile.ZipFile(archive, 'w') as bundle:
+                    bundle.writestr(member, '{"label": 0}\n')
+                archives[name] = str(archive)
             previous = Path.cwd()
             try:
-                with patch('sys.argv', ['download_pdf.py', '--data-dir', str(folder / 'data')]), patch(
-                    'thrember.download.hf_hub_download', return_value=str(archive)
-                ) as download:
+                with patch('sys.argv', ['download_pdf.py', '--data-dir', str(folder / 'data'),
+                                       '--report-dir', str(folder / 'reports')]), patch(
+                    'download_pdf.hf_hub_download', side_effect=lambda **kw: archives[kw['filename']], create=True
+                ):
                     download_pdf.main()
-                    download.assert_called_once_with(
-                        repo_id='joyce8/EMBER2024', filename='PDF_train.zip', repo_type='dataset'
-                    )
             finally:
                 os.chdir(previous)
             self.assertEqual(
                 (folder / 'data/PDF/sample_PDF_train.jsonl').read_text(), '{"label": 0}\n'
             )
+            self.assertTrue((folder / 'data/PDF/sample_PDF_test.jsonl').is_file())
+            self.assertTrue((folder / 'data/challenge/sample_challenge_malicious.jsonl').is_file())
+            report = json.loads((folder / 'reports/download.json').read_text())
+            self.assertEqual([item['archive'] for item in report['downloads']],
+                             ['PDF_train.zip', 'PDF_test.zip', 'challenge.zip'])
+            self.assertTrue(all(Path(path).is_file() for path in archives.values()))
+            # Repeat without deleting cached archives or creating duplicate training files.
+            with patch('sys.argv', ['download_pdf.py', '--data-dir', str(folder / 'data'),
+                                   '--report-dir', str(folder / 'reports')]), patch(
+                'download_pdf.hf_hub_download', side_effect=lambda **kw: archives[kw['filename']]
+            ):
+                download_pdf.main()
+            self.assertEqual(len(list((folder / 'data').rglob('*_train.jsonl'))), 1)
 
     def test_recursively_trains_on_pdf_and_added_elf_without_test_leakage(self):
         with tempfile.TemporaryDirectory() as folder:

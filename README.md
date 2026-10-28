@@ -7,16 +7,19 @@ updates. Server data and generated artifacts stay local under ignored `data/`.
 ## Layout
 
 ```text
-scripts/server.sh           setup, tests, download, and training commands
+scripts/server.sh           setup, tests, download, training, and evaluation
 train.py                   EMBER2024 binary LightGBM training
-download_pdf.py             public PDF training feature downloader
+download_pdf.py             PDF train/test and shared challenge downloader
+evaluate.py                 held-out evaluation with JSON/Markdown reports
 requirements.txt           Python dependencies
 vendor/EMBER2024/           bundled upstream source and Apache 2.0 license
 test_scripts.py            functional tests
 data/                      ignored; never commit this directory
-  datasets/PDF/            downloaded PDF *_train.jsonl files
+  datasets/PDF/            downloaded PDF train and test JSONL files
+  datasets/challenge/      shared upstream challenge JSONL files
   datasets/ELF/            optional additional ELF training features
   models/ember2024/        model.txt, training.json, temporary training vectors
+  reports/                download.json, evaluation.json, evaluation.md
   cache/                   Hugging Face, pip, uv, Python, and matplotlib caches
   venv/                    local Python environment
   tmp/                     temporary installation/runtime files
@@ -64,12 +67,21 @@ before updating scripts or dependencies. No background service is required.
 ```bash
 bash scripts/server.sh download
 bash scripts/server.sh train --threads 4 --rounds 500
+bash scripts/server.sh evaluate --threads 4
 ```
 
-Download retrieves only `PDF_train.zip` from `joyce8/EMBER2024` and extracts it
-into `data/datasets/PDF/`. It contains precomputed features, not original PDFs.
+Download retrieves `PDF_train.zip`, `PDF_test.zip`, and `challenge.zip` from
+`joyce8/EMBER2024`. Train and test features go into `data/datasets/PDF/`;
+challenge features go into `data/datasets/challenge/`. The challenge archive is
+the shared upstream set, not a PDF-only benchmark. These archives contain
+precomputed features, not original documents.
 Hugging Face cache is in `data/cache/huggingface/`; Xet is disabled. Rerunning
-download may download and extract the archive again.
+download reuses cached archives and extracts them again at the same paths,
+without adding duplicate training copies. Cached archives remain under `data/`.
+`data/reports/download.json` records sources, extracted files, byte sizes,
+and the completion timestamp. Upstream documents approximately 197 MB of PDF
+train features, 46 MB of PDF test features, and 126 MB of challenge features;
+allow extra space for archives, caches, vectors, and models.
 
 Training recursively reads `*_train.jsonl` under `data/datasets/`, skips null/-1
 labels, requires both binary classes, and excludes held-out filenames. To add
@@ -77,7 +89,23 @@ ELF training features, put official `*_train.jsonl` files under
 `data/datasets/ELF/`. Do not duplicate dataset files. Finish downloads before
 training. Each run retrains from scratch and replaces
 `data/models/ember2024/model.txt` and `training.json` after training succeeds.
-It does not compute holdout accuracy.
+Training does not use test or challenge data. Run `evaluate` after training to
+produce `data/reports/evaluation.json` and a readable
+`data/reports/evaluation.md`. It evaluates test and challenge separately, with
+row/class counts, confusion counts (TN/FP/FN/TP), accuracy, precision, recall
+(malware detection rate), F1, false-positive rate, ROC-AUC, and average precision.
+It also prints the results to the terminal. Undefined metrics are `null`/`N/A`:
+for example, an all-malicious challenge set cannot establish ROC-AUC or a
+false-positive rate. It does not tune on either held-out split.
+
+Evaluation uses a fixed probability threshold of 0.5; override with
+`evaluate --threshold 0.5 --batch-size 1024`. Features are predicted in batches
+to limit memory usage. The report identifies the model by SHA-256 and records
+input filenames, threshold, and evaluation timestamp. Rows labeled null or -1
+are excluded, as during training. Both test and challenge files must be present;
+missing splits or invalid labels cause a failure rather than a partial success
+report. Reports replace previous reports on success; check their timestamps
+if a later run fails.
 
 Full training needs about 10 KB of temporary disk per labeled row plus RAM for
 LightGBM; check disk and memory before large runs. Defaults are 500 boosting
@@ -86,8 +114,9 @@ are `download --data-dir PATH` and `train --data-dir PATH --output-dir PATH`;
 keep overrides under `data/` to preserve this layout. Paths default relative
 to the repository, regardless of the caller's working directory.
 
-Tests use generated feature records and a local ZIP, including a real LightGBM
-fit and a check that default model outputs stay under `data/`. They need no
+Tests use generated feature records and local ZIPs, including a real LightGBM
+fit/evaluation, held-out split isolation, hand-checked metrics, single-class
+challenge handling, and a check that default model outputs stay under `data/`. They need no
 dataset download. A passing test suite does not validate full-dataset training
 or external dataset connectivity.
 
