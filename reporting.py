@@ -119,12 +119,24 @@ def save_figures(labels, probabilities, metrics, split, directory):
     return calibration
 
 
-def save_predictions(labels, probabilities, path):
-    with path.open('w', newline='') as stream:
-        writer = csv.writer(stream)
-        writer.writerow(['labeled_row_index', 'label', 'malicious_probability'])
-        writer.writerows((index, label, probability)
-                         for index, (label, probability) in enumerate(zip(labels, probabilities)))
+def prediction_outcome(label, probability, threshold):
+    predicted = int(probability >= threshold)
+    return ('TP' if label else 'FP') if predicted else ('FN' if label else 'TN')
+
+
+def save_predictions(labels, probabilities, identities, threshold, path):
+    fields = ['labeled_row_index', 'source_file', 'source_line', 'sha256', 'file_type',
+              'label', 'malicious_probability', 'predicted_label', 'outcome']
+    rows = [dict(identity, labeled_row_index=index, label=label, malicious_probability=probability,
+                 predicted_label=int(probability >= threshold), outcome=prediction_outcome(label, probability, threshold))
+            for index, (identity, label, probability) in enumerate(zip(identities, labels, probabilities))]
+    for outcome in (None, 'FP', 'FN'):
+        suffix = 'false_positives' if outcome == 'FP' else 'false_negatives'
+        target = path if outcome is None else path.with_name(path.name.replace('predictions', suffix))
+        with target.open('w', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(row for row in rows if outcome is None or row['outcome'] == outcome)
 
 
 def format_number(value):
@@ -139,6 +151,8 @@ def markdown_report(report):
              f'- Model SHA-256: `{report["model_sha256"]}`',
              f'- Fixed probability threshold: {report["threshold"]}',
              f'- Training metadata: {report["training_metadata_status"]}',
+             f'- CPU threads: {report["protocol"]["threads"]}; device: {report["execution_device"]["resolved"]}',
+             f'- Device selection: {report["execution_device"]["reason"]}',
              f'- Evaluation wall time: {report["timing_seconds"]:.3f} s', '']
     training = report.get('training')
     if training:
@@ -178,6 +192,7 @@ def markdown_report(report):
                   f'![ROC, precision–recall and reliability]({split}_curves.png)', '',
                   f'![Confusion matrix]({split}_confusion.png)', '',
                   f'[Vector curves]({split}_curves.svg) · [Predictions]({split}_predictions.csv)', '']
+        lines += [f'[False positives]({split}_false_positives.csv) · [False negatives]({split}_false_negatives.csv)', '']
     lines += ['## Interpretation and limitations', '', *['- ' + item for item in report['notes']], '',
               '## Software versions', '', '| Component | Version |', '| --- | --- |']
     lines += [f'| {name} | {value} |' for name, value in report['software'].items()]

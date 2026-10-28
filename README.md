@@ -8,9 +8,10 @@ updates. Server data and generated artifacts stay local under ignored `data/`.
 
 ```text
 scripts/server.sh           setup, tests, download, training, and evaluation
-train.py                   binary LightGBM or CPU XGBoost training
+train.py                   binary LightGBM or CPU/CUDA XGBoost training
 download_pdf.py             PDF train/test and shared challenge downloader
 evaluate.py                 held-out evaluation with JSON/Markdown reports
+compare.py                  matched-sample LightGBM vs XGBoost comparison
 requirements.txt           Python dependencies
 vendor/EMBER2024/           bundled upstream source and Apache 2.0 license
 test_scripts.py            functional tests
@@ -22,6 +23,7 @@ data/                      ignored; never commit this directory
   models/ember2024-xgboost/ model.ubj, training.json for XGBoost
   reports/                download.json, evaluation.json, evaluation.md
   reports/xgboost/        XGBoost evaluation reports and figures
+  reports/comparison/     comparison report, figures, and per-file results
   cache/                   Hugging Face, pip, uv, Python, and matplotlib caches
   venv/                    local Python environment
   tmp/                     temporary installation/runtime files
@@ -38,7 +40,10 @@ Training writes models there automatically.
 
 Requirements: Linux, Git, Python 3.10+, Python venv/pip support, and the OpenMP
 runtime (`libgomp1` on Debian/Ubuntu). Setup uses uv if available, otherwise pip.
-XGBoost uses the `xgboost-cpu` package; CUDA and a GPU are not required.
+Setup migrates the older `xgboost-cpu` installation to the full `xgboost`
+package, which supports CPU and NVIDIA CUDA. A GPU run requires a compatible
+NVIDIA GPU and host driver for the installed XGBoost wheel. GPU drivers are not
+installed by this repository. CPU operation remains available.
 Public package and dataset downloads need network access; the public Hugging Face
 dataset does not require a token.
 
@@ -69,8 +74,8 @@ before updating scripts or dependencies. No background service is required.
 
 ```bash
 bash scripts/server.sh download
-bash scripts/server.sh train --threads 4 --rounds 500
-bash scripts/server.sh evaluate --threads 4
+bash scripts/server.sh train --threads 16 --rounds 500
+bash scripts/server.sh evaluate --threads 16
 ```
 
 ## XGBoost on the same dataset
@@ -78,9 +83,28 @@ bash scripts/server.sh evaluate --threads 4
 After the same download, run:
 
 ```bash
-bash scripts/server.sh train --backend xgboost --threads 4 --rounds 500 --seed 0
-bash scripts/server.sh evaluate --backend xgboost --threads 4
+bash scripts/server.sh train --backend xgboost --threads 16 --rounds 500 --seed 0
+bash scripts/server.sh evaluate --backend xgboost --threads 16
 ```
+
+Training and evaluation now default to **16 CPU threads**. XGBoost defaults to
+`--device auto`: it runs a small CUDA training probe and selects a usable GPU,
+or reports why it selected CPU. To require the selected NVIDIA GPU explicitly:
+
+```bash
+bash scripts/server.sh train --backend xgboost --threads 16 --device cuda
+bash scripts/server.sh evaluate --backend xgboost --threads 16 --device cuda
+```
+
+`--device cuda:1` selects GPU 1 among the devices visible to the process;
+`--device cpu` forces CPU operation. Explicit CUDA requests fail if XGBoost
+cannot use that GPU. Auto mode records any fallback in the terminal and report.
+GPU histogram training uses the selected GPU without an artificial utilization
+or VRAM quota. XGBoost manages its own memory; GPU saturation depends on dataset
+size and workload, and 100% utilization cannot be guaranteed. This is one GPU
+per training run, not distributed training across all GPUs. CPU feature
+extraction remains on the host; `--threads` configures the model backend's CPU
+workers. LightGBM continues to use CPU.
 
 The default backend remains LightGBM. XGBoost uses the same training-file
 discovery, label filtering, feature extractor, and held-out splits. Its model is
@@ -93,10 +117,11 @@ For repeatable baseline runs, record the seed and use the same inputs, fixed
 threshold, and thread budget for both models:
 
 ```bash
-bash scripts/server.sh train --backend lightgbm --threads 4 --rounds 500 --seed 0
-bash scripts/server.sh evaluate --backend lightgbm --threads 4
-bash scripts/server.sh train --backend xgboost --threads 4 --rounds 500 --seed 0
-bash scripts/server.sh evaluate --backend xgboost --threads 4
+bash scripts/server.sh train --backend lightgbm --threads 16 --rounds 500 --seed 0
+bash scripts/server.sh evaluate --backend lightgbm --threads 16
+bash scripts/server.sh train --backend xgboost --threads 16 --rounds 500 --seed 0
+bash scripts/server.sh evaluate --backend xgboost --threads 16
+bash scripts/server.sh compare
 ```
 
 The hyperparameters are documented baselines, not a tuned comparison. LightGBM
@@ -105,6 +130,50 @@ declares categorical feature indices `[2,3,4,5,6,701,702]`; XGBoost uses all
 Model capacity, categorical handling, and CPU implementations differ, so equal
 rounds do not establish equal capacity or runtime. These settings and differences
 are recorded in the report. Neither backend calibrates its probabilities.
+
+## LightGBM vs XGBoost: detections and mistakes
+
+After evaluating both models with this version, run:
+
+```bash
+bash scripts/server.sh compare
+```
+
+Results go to `data/reports/comparison/comparison.md` and `comparison.json`.
+For each split the report shows TP/TN/FP/FN, correct decisions, recall,
+false-positive rate, precision, F1, ROC-AUC and AP; it includes overlaid curves
+and confusion-count figures. It counts files both models got right, only
+LightGBM got right, only XGBoost got right, or both got wrong. Detection overlap
+and benign false-positive overlap are counted separately.
+
+For every test/challenge split, inspect:
+
+- `*_samples.csv`: every sample with both models' scores and outcomes.
+- `*_disagreements.csv`: files where the models make different decisions.
+- `*_errors.csv`: files misclassified by either model, including shared misses.
+- `*_detections.csv`: malicious samples correctly detected by at least one model.
+
+Each row contains the original sample SHA-256 when provided, source JSONL
+path, 1-based source line, true label, both malicious-probability scores,
+TP/TN/FP/FN outcomes, and which model was correct. A **false positive** is a
+benign file incorrectly flagged as malicious; a **false negative** is a
+malicious file missed. A correct detection is **TP**; a correctly accepted
+benign file is **TN**. SHA-256 identifies the original file, but this dataset
+contains its features, not the original PDF or a recoverable original path.
+
+Comparison refuses different held-out dataset hashes, feature extractors,
+thresholds, source rows, labels, or tampered prediction CSVs. When both models
+have training manifests, they must match too; missing training metadata is
+reported as unverified. Rows with repeated SHA-256 values remain separate and
+are paired by source path and line. Older evaluation reports must be regenerated
+to add those identities; existing models can be reused if their feature
+extractor still matches. Comparison itself does not train or tune either model.
+
+Custom report locations:
+
+```bash
+bash scripts/server.sh compare --lightgbm-report data/reports/evaluation.json --xgboost-report data/reports/xgboost/evaluation.json --output-dir data/reports/comparison
+```
 
 ## Scientific reports
 
@@ -119,7 +188,9 @@ Each evaluation produces the following in its backend's report directory:
 - `test_confusion.png`/`.svg` and `challenge_confusion.png`/`.svg`: labeled
   confusion matrices.
 - `test_predictions.csv` and `challenge_predictions.csv`: labeled-row order,
-  ground truth, and malicious probabilities for further analysis. Ordering is
+  sample SHA-256, JSONL source path/line, ground truth, probabilities, predicted
+  labels, and TP/TN/FP/FN outcomes. Each split also gets `*_false_positives.csv`
+  and `*_false_negatives.csv` for direct inspection. Ordering is
   sorted input filename then labeled line order, bound to the input manifest.
 
 Reports add balanced accuracy, Matthews correlation coefficient (MCC), Brier
@@ -185,7 +256,7 @@ if a later run fails.
 
 Full training needs about 10 KB of temporary disk per labeled row plus RAM for
 LightGBM; check disk and memory before large runs. Defaults are 500 boosting
-rounds and all CPU cores; use `--threads` to limit CPU use. Optional overrides
+rounds and 16 CPU threads; override with `--threads` when needed. Optional overrides
 are `download --data-dir PATH` and `train --data-dir PATH --output-dir PATH`;
 keep overrides under `data/` to preserve this layout. Paths default relative
 to the repository, regardless of the caller's working directory.

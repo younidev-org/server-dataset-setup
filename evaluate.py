@@ -12,15 +12,15 @@ import lightgbm as lgb
 import numpy as np
 from thrember import PEFeatureExtractor
 
-from experiment import input_manifest, manifest_sha256, sha256_file, software_versions
+from experiment import input_manifest, manifest_sha256, sha256_file, software_versions, resolve_xgboost_device
 from reporting import classification_metrics, markdown_report, save_figures, save_predictions
 from train import training_records
 
 ROOT = Path(__file__).resolve().parent
 
 
-def evaluate_split(model, extractor, paths, batch_size, threads, threshold, backend='lightgbm'):
-    labels, scores, batch = [], [], []
+def evaluate_split(model, extractor, paths, batch_size, threads, threshold, backend='lightgbm', data_root=None):
+    labels, scores, batch, identities = [], [], [], []
     statistics = {'total_records': 0, 'skipped_unlabeled': 0}
 
     def predict_batch():
@@ -28,14 +28,19 @@ def evaluate_split(model, extractor, paths, batch_size, threads, threshold, back
         if backend == 'lightgbm':
             predictions = np.asarray(model.predict(features, num_threads=threads))
         else:
-            predictions = np.asarray(model.inplace_predict(features))
+            import xgboost as xgb
+            # DMatrix prediction supports transfer from host arrays to the chosen GPU.
+            predictions = np.asarray(model.predict(xgb.DMatrix(features, nthread=threads)))
         if predictions.ndim != 1 or len(predictions) != len(batch) or not np.all(np.isfinite(predictions)) or np.any((predictions < 0) | (predictions > 1)):
             raise ValueError('Expected one finite binary probability between 0 and 1 per record')
         scores.extend(predictions.tolist())
         batch.clear()
 
-    for record in training_records(paths, statistics):
+    for record, path, line_number in training_records(paths, statistics, with_source=True):
         labels.append(record['label'])
+        identities.append({'source_file': str(path.relative_to(data_root)) if data_root else str(path),
+                           'source_line': line_number, 'sha256': record.get('sha256') or '',
+                           'file_type': record.get('file_type') or ''})
         batch.append(extractor.process_raw_features(record))
         if len(batch) == batch_size:
             predict_batch()
@@ -45,7 +50,7 @@ def evaluate_split(model, extractor, paths, batch_size, threads, threshold, back
         raise ValueError(f'No labeled evaluation records in {paths}')
     metrics = classification_metrics(labels, scores, threshold)
     metrics.update(statistics)
-    return metrics, labels, scores
+    return metrics, labels, scores, identities
 
 
 def main():
@@ -56,11 +61,17 @@ def main():
     parser.add_argument('--report-dir', type=Path)
     parser.add_argument('--threshold', type=float, default=0.5)
     parser.add_argument('--batch-size', type=int, default=1024)
-    parser.add_argument('--threads', type=int, default=4)
+    parser.add_argument('--threads', type=int, default=16)
+    parser.add_argument('--device', default='auto', help='XGBoost: auto, cpu, cuda, or cuda:N')
     args = parser.parse_args()
     started = time.perf_counter()
     if not 0 <= args.threshold <= 1 or args.batch_size < 1 or args.threads < 1:
         parser.error('threshold must be between 0 and 1; batch-size and threads must be positive')
+    if args.backend == 'lightgbm' and args.device not in ('auto', 'cpu'):
+        parser.error('--device CUDA applies to XGBoost only; LightGBM uses CPU')
+    device_info = (resolve_xgboost_device(args.device, args.threads) if args.backend == 'xgboost'
+                   else {'requested': args.device, 'resolved': 'cpu', 'reason': 'LightGBM CPU backend'})
+    print(f'Using {args.threads} CPU threads; device: {device_info["resolved"]} ({device_info["reason"]})', flush=True)
     if args.model is None:
         args.model = ROOT / 'data/models' / ('ember2024/model.txt' if args.backend == 'lightgbm' else 'ember2024-xgboost/model.ubj')
     if args.report_dir is None:
@@ -81,7 +92,7 @@ def main():
         import xgboost as xgb
         model = xgb.Booster()
         model.load_model(args.model)
-        model.set_param({'nthread': args.threads, 'device': 'cpu'})
+        model.set_param({'nthread': args.threads, 'device': device_info['resolved']})
         num_features = model.num_features()
     extractor = PEFeatureExtractor()
     if num_features != extractor.dim:
@@ -99,11 +110,12 @@ def main():
                 parser.error('Installed feature extractor differs from the one used for training')
             training, training_status = metadata, 'verified_model_hash'
     report = {
-        'schema_version': 2, 'generated_at': datetime.now(timezone.utc).isoformat(),
+        'schema_version': 3, 'generated_at': datetime.now(timezone.utc).isoformat(),
         'backend': args.backend, 'model': str(args.model.resolve()), 'model_sha256': model_hash,
         'threshold': args.threshold, 'feature_count': extractor.dim,
         'feature_extractor_sha256': extractor_hash,
         'evaluator_sha256': sha256_file(Path(__file__)),
+        'execution_device': device_info,
         'software': software_versions(), 'training': training, 'training_metadata_status': training_status,
         'protocol': {'threshold_selection': 'Fixed before evaluation; no held-out tuning',
                      'confidence_intervals': 'Two-sided 95% Wilson score intervals for binomial rates',
@@ -131,7 +143,7 @@ def main():
             print(f'Evaluating {split}: {len(paths)} files...', flush=True)
             manifest = input_manifest(paths, data)
             split_started = time.perf_counter()
-            metrics, labels, scores = evaluate_split(model, extractor, paths, args.batch_size, args.threads, args.threshold, args.backend)
+            metrics, labels, scores, identities = evaluate_split(model, extractor, paths, args.batch_size, args.threads, args.threshold, args.backend, data)
             metrics['evaluation_seconds'] = time.perf_counter() - split_started
             if input_manifest(paths, data) != manifest:
                 raise ValueError('Evaluation inputs changed during this run; report not published')
@@ -139,7 +151,9 @@ def main():
             metrics['dataset_sha256'] = manifest_sha256(manifest)
             metrics['files'] = [item['path'] for item in manifest]
             metrics['calibration_bins'] = save_figures(labels, scores, metrics, split, staging)
-            save_predictions(labels, scores, staging / f'{split}_predictions.csv')
+            prediction_path = staging / f'{split}_predictions.csv'
+            save_predictions(labels, scores, identities, args.threshold, prediction_path)
+            metrics['prediction_csv_sha256'] = sha256_file(prediction_path)
             report['splits'][split] = metrics
             print(f'{split}: n={metrics["rows"]}; ROC-AUC={metrics["roc_auc"]}; recall={metrics["recall"]}', flush=True)
         if sha256_file(args.model) != model_hash:

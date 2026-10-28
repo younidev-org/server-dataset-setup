@@ -1,5 +1,5 @@
 ./vendor/EMBER2024
 # EMBER2024 imports SignedPEFile, removed in Signify 0.9.
 signify==0.8.1
-# CPU-only XGBoost avoids downloading CUDA dependencies on the Linux server.
-xgboost-cpu>=3.0,<4
+# Full XGBoost supports CPU and NVIDIA CUDA; GPU drivers belong to the host.
+xgboost>=3.0,<4

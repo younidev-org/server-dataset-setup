@@ -10,7 +10,7 @@ import tempfile
 import time
 import sys
 
-from experiment import input_manifest, manifest_sha256, sha256_file, software_versions
+from experiment import input_manifest, manifest_sha256, sha256_file, software_versions, resolve_xgboost_device
 
 import lightgbm as lgb
 import numpy as np
@@ -20,7 +20,7 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parent
 
 
-def training_records(paths, statistics=None):
+def training_records(paths, statistics=None, with_source=False):
     for path in paths:
         with path.open(encoding='utf-8') as stream:
             for line_number, line in enumerate(stream, 1):
@@ -37,7 +37,7 @@ def training_records(paths, statistics=None):
                         raise ValueError('Expected binary label 0 or 1')
                 except (ValueError, KeyError, TypeError) as exc:
                     raise ValueError(f'{path}:{line_number}: {exc}') from exc
-                yield record
+                yield (record, path, line_number) if with_source else record
 
 
 def main():
@@ -47,11 +47,17 @@ def main():
     parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--rounds', type=int, default=500)
-    parser.add_argument('--threads', type=int, default=0, help='0 uses all CPU cores')
+    parser.add_argument('--threads', type=int, default=16, help='CPU threads (default: 16; 0 uses all cores)')
+    parser.add_argument('--device', default='auto', help='XGBoost: auto, cpu, cuda, or cuda:N')
     args = parser.parse_args()
     started = time.perf_counter()
     if args.rounds < 1 or args.threads < 0:
         parser.error('--rounds must be positive; --threads must be nonnegative')
+    if args.backend == 'lightgbm' and args.device not in ('auto', 'cpu'):
+        parser.error('--device CUDA applies to XGBoost only; LightGBM uses CPU')
+    device_info = (resolve_xgboost_device(args.device, args.threads) if args.backend == 'xgboost'
+                   else {'requested': args.device, 'resolved': 'cpu', 'reason': 'LightGBM CPU backend'})
+    print(f'Using {args.threads} CPU threads; device: {device_info["resolved"]} ({device_info["reason"]})', flush=True)
     data = args.data_dir.resolve()
     paths = sorted(path for path in data.rglob('*_train.jsonl') if path.is_file())
     if not paths:
@@ -101,7 +107,7 @@ def main():
             categorical = []
             parameters = {
                 'objective': 'binary:logistic', 'eval_metric': 'logloss',
-                'tree_method': 'hist', 'device': 'cpu', 'eta': 0.1, 'max_depth': 6,
+                'tree_method': 'hist', 'device': device_info['resolved'], 'eta': 0.1, 'max_depth': 6,
                 'min_child_weight': 1, 'lambda': 1.0,
                 'scale_pos_weight': labels[0] / labels[1],
                 'seed': args.seed, 'nthread': args.threads,
@@ -120,6 +126,7 @@ def main():
         'files': [str(path.relative_to(data)) for path in paths],
         'rounds': args.rounds,
         'actual_rounds': actual_rounds, 'backend': args.backend, 'seed': args.seed,
+        'execution_device': device_info,
         'parameters': parameters, 'categorical_feature_indices': categorical,
         'feature_handling': 'Bundled 2568-dimensional float32 EMBER vectors; XGBoost treats all columns as numeric, LightGBM declares selected categorical indices.',
         'input_manifest': manifest, 'dataset_sha256': manifest_sha256(manifest),
