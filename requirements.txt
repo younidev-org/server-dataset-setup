@@ -1,0 +1,3 @@
+./vendor/EMBER2024
+# EMBER2024 imports SignedPEFile, removed in Signify 0.9.
+signify==0.8.1
