@@ -12,6 +12,11 @@ DEFAULTS = {
     'training': {'rounds': 500, 'seed': 0},
     'evaluation': {'threshold': 0.5, 'batch_size': 1024},
     'paths': {'data_dir': 'data/datasets', 'model_root': 'data/models', 'report_root': 'data/reports', 'run_root': 'data/runs'},
+    'benchmark': {'dataset': 'ember2024', 'variant': 'original', 'file_types': ['PDF'],
+                  'max_train_rows': 5000, 'max_test_rows': 2000, 'max_challenge_rows': 1000,
+                  'validation_fraction': 0.2, 'split_strategy': 'chronological',
+                  'training_fractions': [1.0], 'seeds': [0], 'target_fpr': 0.01, 'early_stopping_rounds': 20},
+    'candidates': [],
     'steps': [],
 }
 
@@ -44,8 +49,8 @@ def load_config(path=None, root=ROOT):
             for section, values in document.items():
                 if section not in DEFAULTS:
                     raise ValueError(f'Unknown configuration section: {section}')
-                if section == 'steps':
-                    settings['steps'] = values
+                if section in ('steps', 'candidates'):
+                    settings[section] = values
                 else:
                     if not isinstance(values, dict) or set(values) - set(DEFAULTS[section]):
                         raise ValueError(f'Unknown or invalid settings in [{section}]')

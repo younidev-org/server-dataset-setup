@@ -23,11 +23,12 @@ def main():
     parser.add_argument('--data-dir', type=Path, default=ROOT / config['paths']['data_dir'])
     parser.add_argument('--report-dir', type=Path, default=ROOT / config['paths']['report_root'])
     parser.add_argument("--force", action="store_true", help="Recheck archives and extract again")
+    parser.add_argument('--file-types', nargs='+', choices=['PDF', 'ELF', 'APK', 'Win32', 'Win64', 'Dot_Net'], default=config['benchmark']['file_types'])
     args = parser.parse_args()
     data = args.data_dir.resolve()
     downloads = []
-    for filename, subdir in [('PDF_train.zip', 'PDF'), ('PDF_test.zip', 'PDF'),
-                             ('challenge.zip', 'challenge')]:
+    archives = [(f'{kind}_{split}.zip', kind) for kind in args.file_types for split in ('train', 'test')]
+    for filename, subdir in archives + [('challenge.zip', 'challenge')]:
         destination = data / subdir
         destination.mkdir(parents=True, exist_ok=True)
         marker = data / '.downloads' / (filename + '.json')

@@ -7,6 +7,15 @@ updates. Server data and generated artifacts stay local under ignored `data/`.
 Read [the technical guide](TECHNICAL_GUIDE.md) for report columns, model parameters,
 statistical terminology, and an example explaining precision 1.0 with 50% recall.
 
+## Early-development algorithm and data experiments
+
+Use [the experiment guide](docs/EXPERIMENTS.md) and
+`bash run_all.sh --config configs/ember2024-subset.toml` to choose EMBER2024
+file types, bounded subsets, algorithms, parameter candidates, seeds and training
+fractions. It adds identity leakage checks, validation-only selection/early
+stopping, and per-run model preservation. The root config below retains the
+simple fixed-parameter workflow.
+
 ## Run everything from TOML
 
 After pulling the repository, one command executes the configured workflow:

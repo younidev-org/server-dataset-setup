@@ -14,12 +14,13 @@ from .configuration import load_config
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def template_values(settings, root, run_dir=None):
+def template_values(settings, root, run_dir=None, config_path=None):
     root = Path(root).resolve()
     paths = {name: str((root / value).resolve()) for name, value in settings['paths'].items()}
     if run_dir is not None:
         paths['report_root'] = str(Path(run_dir) / 'reports')
     values = dict(paths, **settings['runtime'], **settings['training'], **settings['evaluation'])
+    values['config'] = str(Path(config_path).resolve() if config_path else root / 'config.toml')
     values.update(run_dir=str(run_dir or ''), run_id=Path(run_dir).name if run_dir else '', root=str(root), server=str(root / 'scripts/server.sh'),
                   python=str(root / 'data/venv/bin/python'))
     values.update(lightgbm_model_dir=str(Path(paths['model_root']) / 'ember2024'),
@@ -33,8 +34,8 @@ def template_values(settings, root, run_dir=None):
     return {name: str(value) for name, value in values.items()}
 
 
-def build_commands(settings, root=ROOT, run_dir=None):
-    values = template_values(settings, root, run_dir)
+def build_commands(settings, root=ROOT, run_dir=None, config_path=None):
+    values = template_values(settings, root, run_dir, config_path)
     commands = []
     for step in settings['steps']:
         if step.get('enabled', True):
@@ -61,7 +62,8 @@ def main():
         settings = load_config(args.config)
         run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8]
         run_dir = (ROOT / settings['paths']['run_root'] / run_id).resolve()
-        commands = build_commands(settings, run_dir=run_dir)
+        config_path = args.config or (ROOT/'data/config.toml' if (ROOT/'data/config.toml').is_file() else ROOT/'config.toml')
+        commands = build_commands(settings, run_dir=run_dir, config_path=config_path)
         names = [step['name'] for step in settings['steps'] if step.get('enabled', True)]
         if args.dry_run:
             for name, command in zip(names, commands):
@@ -72,7 +74,7 @@ def main():
             return 0
         run_dir.mkdir(parents=True, exist_ok=False)
         record = {'run_id': run_id, 'status': 'running', 'settings': settings,
-                  'resolved_paths': template_values(settings, ROOT, run_dir), 'commands': commands}
+                  'resolved_paths': template_values(settings, ROOT, run_dir, config_path), 'commands': commands}
         def save_record():
             pending = run_dir / 'run.json.tmp'
             pending.write_text(json.dumps(record, indent=2) + '\n')

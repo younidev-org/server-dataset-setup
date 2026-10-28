@@ -39,7 +39,7 @@ case "$action" in
     "$python_bin" setup_state.py check
     printf '%s\n' "$setup_fingerprint" > data/setup.sha256
     ;;
-  train|download|evaluate|compare|gpu|test)
+  train|download|evaluate|compare|benchmark|gpu|test)
     if [ ! -x "$python_bin" ]; then
       echo 'Run bash scripts/server.sh setup first.' >&2
       exit 1
@@ -48,13 +48,14 @@ case "$action" in
       train) exec "$python_bin" train.py "$@" ;;
       download) exec "$python_bin" download_pdf.py "$@" ;;
       evaluate) exec "$python_bin" evaluate.py "$@" ;;
+      benchmark) exec "$python_bin" benchmark.py "$@" ;;
       gpu) exec "$python_bin" gpu_info.py "$@" ;;
       compare) exec "$python_bin" compare.py "$@" ;;
       test) exec "$python_bin" -m unittest discover -v "$@" ;;
     esac
     ;;
   help|-h|--help)
-    echo 'Usage: bash scripts/server.sh {setup|test|download|train|evaluate|compare|gpu} [options]'
+    echo 'Usage: bash scripts/server.sh {setup|test|download|train|evaluate|compare|benchmark|gpu} [options]'
     ;;
   *) echo "Unknown action: $action" >&2; exit 2 ;;
 esac
