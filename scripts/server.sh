@@ -20,28 +20,24 @@ case "$action" in
     if [ ! -x "$python_bin" ]; then
       python3 -m venv "$repo_root/data/venv"
     fi
-    # These distributions share the xgboost module; migrate rather than install both.
-    migrate_xgboost=0
+    setup_fingerprint="$("$python_bin" setup_state.py fingerprint)"
+    if [ -f data/setup.sha256 ] && [ "$(cat data/setup.sha256)" = "$setup_fingerprint" ] && "$python_bin" setup_state.py check; then
+      echo 'Dependencies already prepared and healthy; skipping installation.'
+      exit 0
+    fi
     if "$python_bin" -c "from importlib.metadata import distribution; distribution('xgboost-cpu')" >/dev/null 2>&1; then
-      migrate_xgboost=1
-      if command -v uv >/dev/null 2>&1; then
-        uv pip uninstall --python "$python_bin" xgboost-cpu
-      else
-        "$python_bin" -m pip uninstall --yes xgboost-cpu
-      fi
+      echo 'Existing xgboost-cpu preserved. Full CUDA XGBoost cannot be installed alongside it; use a separate environment for CUDA.' >&2
+      exit 1
     fi
     if command -v uv >/dev/null 2>&1; then
-      refresh_options=()
-      if [ "$migrate_xgboost" = 1 ]; then refresh_options=(--reinstall-package xgboost); fi
-      uv pip install --python "$python_bin" "${refresh_options[@]}" -r requirements.txt
+      uv pip install --python "$python_bin" -r requirements.txt
       uv pip check --python "$python_bin"
     else
-      if [ "$migrate_xgboost" = 1 ]; then
-        "$python_bin" -m pip install --force-reinstall --no-deps 'xgboost>=3.0,<4'
-      fi
       "$python_bin" -m pip install --disable-pip-version-check -r requirements.txt
       "$python_bin" -m pip check
     fi
+    "$python_bin" setup_state.py check
+    printf '%s\n' "$setup_fingerprint" > data/setup.sha256
     ;;
   train|download|evaluate|compare|test)
     if [ ! -x "$python_bin" ]; then

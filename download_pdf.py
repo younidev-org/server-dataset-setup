@@ -14,6 +14,7 @@ os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
 
 from huggingface_hub import hf_hub_download
 from configuration import command_config
+from experiment import sha256_file
 
 
 def main():
@@ -21,6 +22,7 @@ def main():
     config = command_config(parser)
     parser.add_argument('--data-dir', type=Path, default=ROOT / config['paths']['data_dir'])
     parser.add_argument('--report-dir', type=Path, default=ROOT / config['paths']['report_root'])
+    parser.add_argument("--force", action="store_true", help="Recheck archives and extract again")
     args = parser.parse_args()
     data = args.data_dir.resolve()
     downloads = []
@@ -28,6 +30,16 @@ def main():
                              ('challenge.zip', 'challenge')]:
         destination = data / subdir
         destination.mkdir(parents=True, exist_ok=True)
+        marker = data / '.downloads' / (filename + '.json')
+        if marker.is_file() and not args.force:
+            saved = json.loads(marker.read_text())
+            if saved.get('destination') == str(destination) and saved.get('file_hashes') and all(
+                (data / name).is_file() and sha256_file(data / name) == digest
+                for name, digest in saved['file_hashes'].items()
+            ):
+                print(f'{filename}: existing extracted data verified; skipping download/extraction.', flush=True)
+                downloads.append(saved)
+                continue
         print(f'Downloading {filename} into {destination}', flush=True)
         archive = hf_hub_download(repo_id='joyce8/EMBER2024', filename=filename, repo_type='dataset')
         with zipfile.ZipFile(archive) as bundle:
@@ -43,6 +55,12 @@ def main():
                 'files': [str((destination / item.filename).relative_to(data)) for item in files],
                 'extracted_bytes': sum(item.file_size for item in files),
             })
+        entry = downloads[-1]
+        entry['file_hashes'] = {name: sha256_file(data / name) for name in entry['files']}
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        pending = marker.with_suffix('.tmp')
+        pending.write_text(json.dumps(entry, indent=2) + '\n')
+        pending.replace(marker)
         # Keep the Hugging Face cache intact for retries and later runs.
     report = {
         'generated_at': datetime.now(timezone.utc).isoformat(),

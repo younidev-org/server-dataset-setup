@@ -78,7 +78,7 @@ class TrainingTest(unittest.TestCase):
             # Repeat without deleting cached archives or creating duplicate training files.
             with patch('sys.argv', ['download_pdf.py', '--data-dir', str(folder / 'data'),
                                    '--report-dir', str(folder / 'reports')]), patch(
-                'download_pdf.hf_hub_download', side_effect=lambda **kw: archives[kw['filename']]
+                'download_pdf.hf_hub_download', side_effect=AssertionError('Completed data must not contact the network')
             ):
                 download_pdf.main()
             self.assertEqual(len(list((folder / 'data').rglob('*_train.jsonl'))), 1)

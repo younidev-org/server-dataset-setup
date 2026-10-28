@@ -128,8 +128,7 @@ Training writes models there automatically.
 
 Requirements: Linux, Git, Python 3.10+, Python venv/pip support, and the OpenMP
 runtime (`libgomp1` on Debian/Ubuntu). Setup uses uv if available, otherwise pip.
-Setup migrates the older `xgboost-cpu` installation to the full `xgboost`
-package, which supports CPU and NVIDIA CUDA. A GPU run requires a compatible
+Setup preserves installed packages. The full `xgboost` package supports CPU and NVIDIA CUDA. An existing `xgboost-cpu` installation is preserved and reported as requiring a separate CUDA environment. A GPU run requires a compatible
 NVIDIA GPU and host driver for the installed XGBoost wheel. GPU drivers are not
 installed by this repository. CPU operation remains available.
 Public package and dataset downloads need network access; the public Hugging Face
@@ -358,3 +357,18 @@ or external dataset connectivity.
 Vendored upstream commit: `0ef753e81d98bf209f71b03cd331dfc190b5b54d`
 from https://github.com/FutureComputing4AI/EMBER2024. Signify is pinned to 0.8.1
 because this source uses `SignedPEFile`, removed in Signify 0.9.
+
+## Reusing an existing setup and dataset
+
+Setup records dependency/source inputs in ignored `data/setup.sha256`. When
+those inputs match and dependency/import checks pass, installation is skipped.
+Otherwise the normal installer satisfies requirements without forced reinstalls;
+setup never explicitly uninstalls packages. Dependency changes can still require
+normal package upgrades.
+
+Each successfully extracted archive gets a manifest in `data/datasets/.downloads/`.
+On reruns, matching file hashes skip both network access and extraction for that
+archive. Missing or changed files trigger repair of the affected archive. Existing
+data from before these manifests were introduced needs one archive verification
+and extraction run to establish completeness. Use `download --force` to explicitly
+recheck and extract again. Training/evaluation steps still run when enabled in TOML.
