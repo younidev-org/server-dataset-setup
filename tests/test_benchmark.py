@@ -2,6 +2,14 @@ import unittest
 import numpy as np
 
 class BenchmarkTest(unittest.TestCase):
+    def test_file_type_metrics_do_not_hide_elf_errors_in_pdf_results(self):
+        from dataset_hub.benchmark import metrics_by_file_type
+        result=metrics_by_file_type([{'file_type':kind} for kind in ['PDF','PDF','ELF','ELF']],
+                                   np.array([0,1,0,1]),np.array([0.1,0.9,0.8,0.2]),0.5,['PDF','ELF','APK'])
+        self.assertEqual(result['PDF']['accuracy'],1.0)
+        self.assertEqual(result['ELF']['confusion'],{'tp':0,'tn':0,'fp':1,'fn':1})
+        self.assertEqual(result['APK']['status'],'not_evaluated')
+
     def test_threshold_is_selected_under_validation_false_positive_budget(self):
         from dataset_hub.benchmark import choose_threshold
         threshold = choose_threshold(np.array([0, 0, 1, 1]), np.array([0.1, 0.6, 0.5, 0.9]), 0.0)
@@ -47,11 +55,11 @@ class BenchmarkTest(unittest.TestCase):
                 with (data/f'sample_PDF_{split}.jsonl').open('w') as stream:
                     for i in range(count):
                         record=extractor.raw_features(b'PDF'+bytes([65+i%2])*512+number.to_bytes(2,'little')+i.to_bytes(2,'little'))
-                        record.update(label=i%2 if split!='challenge' else 1,file_type='PDF')
+                        record.update(label=i%2 if split!='challenge' else 1,file_type='PDF' if i%4<2 else 'ELF')
                         stream.write(json.dumps(record)+'\n')
             settings=load_config();settings['paths']['data_dir']=str(data)
             settings['runtime'].update(threads=1,xgboost_device='cpu');settings['training']['rounds']=3
-            settings['benchmark'].update(split_strategy='hash',max_train_rows=100,max_test_rows=16,max_challenge_rows=8,
+            settings['benchmark'].update(file_types=['PDF','ELF'], split_strategy='hash',max_train_rows=100,max_test_rows=16,max_challenge_rows=8,
                                          training_fractions=[1.0],early_stopping_rounds=2)
             settings['candidates']=[{'name':'lgb','backend':'lightgbm','parameters':{'min_data_in_leaf':2}},
                                     {'name':'xgb','backend':'xgboost','parameters':{'max_depth':2}}]
@@ -64,3 +72,6 @@ class BenchmarkTest(unittest.TestCase):
                 self.assertTrue((output/trial['model_path']).is_file())
                 self.assertGreater(trial['validation']['rows'],0)
             self.assertEqual(len(report['held_out']),2)
+            for result in report['held_out'].values():
+                self.assertEqual(set(result['test']['by_file_type']),{'PDF','ELF'})
+                self.assertEqual(sum(m['rows'] for m in result['test']['by_file_type'].values()),result['test']['rows'])

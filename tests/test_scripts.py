@@ -53,6 +53,8 @@ class TrainingTest(unittest.TestCase):
             archives = {}
             for name, member in [('PDF_train.zip', 'sample_PDF_train.jsonl'),
                                  ('PDF_test.zip', 'sample_PDF_test.jsonl'),
+                                 ('ELF_train.zip', 'sample_ELF_train.jsonl'),
+                                 ('ELF_test.zip', 'sample_ELF_test.jsonl'),
                                  ('challenge.zip', 'sample_challenge_malicious.jsonl')]:
                 archive = folder / name
                 with zipfile.ZipFile(archive, 'w') as bundle:
@@ -61,7 +63,7 @@ class TrainingTest(unittest.TestCase):
             previous = Path.cwd()
             try:
                 with patch('sys.argv', ['download_pdf.py', '--data-dir', str(folder / 'data'),
-                                       '--report-dir', str(folder / 'reports')]), patch(
+                                       '--report-dir', str(folder / 'reports'), '--file-types', 'PDF', 'ELF']), patch(
                     'download_pdf.hf_hub_download', side_effect=lambda **kw: archives[kw['filename']], create=True
                 ):
                     download_pdf.main()
@@ -74,15 +76,15 @@ class TrainingTest(unittest.TestCase):
             self.assertTrue((folder / 'data/challenge/sample_challenge_malicious.jsonl').is_file())
             report = json.loads((folder / 'reports/download.json').read_text())
             self.assertEqual([item['archive'] for item in report['downloads']],
-                             ['PDF_train.zip', 'PDF_test.zip', 'challenge.zip'])
+                             ['PDF_train.zip', 'PDF_test.zip', 'ELF_train.zip', 'ELF_test.zip', 'challenge.zip'])
             self.assertTrue(all(Path(path).is_file() for path in archives.values()))
             # Repeat without deleting cached archives or creating duplicate training files.
             with patch('sys.argv', ['download_pdf.py', '--data-dir', str(folder / 'data'),
-                                   '--report-dir', str(folder / 'reports')]), patch(
+                                   '--report-dir', str(folder / 'reports'), '--file-types', 'PDF', 'ELF']), patch(
                 'download_pdf.hf_hub_download', side_effect=AssertionError('Completed data must not contact the network')
             ):
                 download_pdf.main()
-            self.assertEqual(len(list((folder / 'data').rglob('*_train.jsonl'))), 1)
+            self.assertEqual(len(list((folder / 'data').rglob('*_train.jsonl'))), 2)
 
     def test_recursively_trains_on_pdf_and_added_elf_without_test_leakage(self):
         with tempfile.TemporaryDirectory() as folder:

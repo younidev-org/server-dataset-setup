@@ -1,0 +1,54 @@
+# Run: bash run_all.sh --config configs/ember2024-elf-subset.toml
+[runtime]
+threads = 10
+xgboost_device = "auto"
+[training]
+rounds = 200
+seed = 0
+[benchmark]
+dataset = "ember2024"
+variant = "original-elf-subset"
+file_types = ["ELF"]
+max_train_rows = 5000
+max_test_rows = 2000
+max_challenge_rows = 1000
+validation_fraction = 0.2
+split_strategy = "chronological" # Or "hash" for undated/local fixtures.
+training_fractions = [0.5, 1.0]
+seeds = [0] # Add seeds only after the workflow/resources are verified.
+target_fpr = 0.01
+early_stopping_rounds = 20
+
+[[candidates]]
+name = "lgb-small"
+backend = "lightgbm"
+class_weight = "balanced"
+parameters = {num_leaves = 31, min_data_in_leaf = 20}
+[[candidates]]
+name = "lgb-large"
+backend = "lightgbm"
+class_weight = "none"
+parameters = {num_leaves = 63, min_data_in_leaf = 20}
+[[candidates]]
+name = "xgb-shallow"
+backend = "xgboost"
+class_weight = "balanced"
+parameters = {max_depth = 3, eta = 0.1}
+[[candidates]]
+name = "xgb-deeper"
+backend = "xgboost"
+class_weight = "none"
+parameters = {max_depth = 6, eta = 0.1}
+
+[[steps]]
+name = "Reuse or prepare dependencies"
+command = ["bash", "{server}", "setup"]
+[[steps]]
+name = "Tests"
+command = ["bash", "{server}", "test"]
+[[steps]]
+name = "Download selected EMBER file types"
+command = ["bash", "{server}", "download", "--config", "{config}", "--data-dir", "{data_dir}", "--report-dir", "{report_root}"]
+[[steps]]
+name = "Audit and run validation-selected subset experiments"
+command = ["bash", "{server}", "benchmark", "--config", "{config}", "--output-dir", "{run_dir}/benchmark"]

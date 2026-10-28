@@ -7,6 +7,13 @@ updates. Server data and generated artifacts stay local under ignored `data/`.
 Read [the technical guide](TECHNICAL_GUIDE.md) for report columns, model parameters,
 statistical terminology, and an example explaining precision 1.0 with 50% recall.
 
+## PDF and ELF
+
+The subset experiment now selects **PDF + ELF** and reports held-out metrics
+separately by file type. Use `configs/ember2024-elf-subset.toml` for ELF-only.
+Existing local TOML files keep their own selections; set
+`file_types = ["PDF", "ELF"]` under `[benchmark]` to add ELF there.
+
 ## Early-development algorithm and data experiments
 
 Use [the experiment guide](docs/EXPERIMENTS.md) and

@@ -110,7 +110,7 @@ def load_subset(data, b):
             counts[f'{split}_unique_available'] += 1
             match = re.search(r'\d{4}-\d{2}-\d{2}', path.name)
             row = {'id': identity, 'date': match.group() if match else None, 'label': record['label'],
-                   'record': record, 'source_file': str(path.relative_to(data)), 'source_line': line, 'sha256': identity, 'file_type': kind or ''}
+                   'record': record, 'source_file': str(path.relative_to(data)), 'source_line': line, 'sha256': identity, 'file_type': next(k for k in selected if k.upper()==str(kind).upper())}
             heap = heaps[split]; cap = b[f'max_{split}_rows']
             item = (-priority(identity), identity, row)
             if len(heap) < cap: heapq.heappush(heap, item)
@@ -124,6 +124,15 @@ def require_classes(rows, name):
 
 def vectors(rows, extractor):
     return np.asarray([extractor.process_raw_features(r['record']) for r in rows], dtype=np.float32), np.array([r['label'] for r in rows])
+
+
+def metrics_by_file_type(rows, labels, scores, threshold, file_types):
+    results = {}
+    for kind in file_types:
+        indices = np.array([i for i,row in enumerate(rows) if row['file_type'].upper()==kind.upper()], dtype=int)
+        results[kind] = (classification_metrics(labels[indices], scores[indices], threshold) if len(indices)
+                         else {'status':'not_evaluated','reason':'No selected samples of this file type'})
+    return results
 
 
 def fit(candidate, features, labels, val_x, val_y, settings, seed, device):
@@ -164,7 +173,7 @@ def run_benchmark(settings, output):
     train, validation = split_training(rows['train'], b['split_strategy'], b['validation_fraction'], settings['training']['seed'])
     require_classes(train, 'Training pool'); require_classes(validation, 'Validation'); require_classes(rows['test'], 'Test')
     selected_ids = {split: [r['id'] for r in selected] for split, selected in dict(rows, train_pool=train, validation=validation).items()}
-    (output/'audit.json').write_text(json.dumps({'counts': audit, 'selected_sha256': selected_ids, 'input_manifest': manifest}, indent=2))
+    (output/'audit.json').write_text(json.dumps({'counts': audit, 'selected_sha256': selected_ids, 'input_manifest': manifest, 'selected_file_type_counts':{split:dict(Counter(r['file_type'] for r in selected)) for split,selected in dict(rows,train_pool=train,validation=validation).items()}}, indent=2))
     (output/'settings.json').write_text(json.dumps(settings, indent=2))
     extractor = PEFeatureExtractor(); val_x, val_y = vectors(validation, extractor)
     device = resolve_xgboost_device(settings['runtime']['xgboost_device'], settings['runtime']['threads']) if any(c['backend']=='xgboost' for c in settings['candidates']) else {'resolved':'cpu'}
@@ -223,6 +232,7 @@ def run_benchmark(settings, output):
                 started=time.perf_counter(); scores=predict(model,backend,features,settings['runtime']['threads'])
                 paired_scores[split][trial['id']] = (scores, trial['threshold'])
                 metrics=classification_metrics(labels,scores,trial['threshold']); metrics['prediction_seconds']=time.perf_counter()-started
+                metrics['by_file_type']=metrics_by_file_type(rows[split],labels,scores,trial['threshold'],b['file_types'])
                 identities=[{k:r[k] for k in ('source_file','source_line','sha256','file_type')} for r in rows[split]]
                 save_predictions(labels,scores,identities,trial['threshold'],directory/f'{split}_predictions.csv')
                 metrics['calibration_bins']=save_figures(labels,scores,metrics,split,directory)
@@ -230,11 +240,11 @@ def run_benchmark(settings, output):
             (directory/'metrics.json').write_text(json.dumps(result, indent=2, allow_nan=False)); results[trial['id']]=result
     for split, predictions in paired_scores.items():
         with (output/f'{split}_comparison.csv').open('w',newline='') as stream:
-            fields=['sha256','source_file','source_line','label']+[f'{trial}:{value}' for trial in predictions for value in ('probability','outcome')]
+            fields=['sha256','source_file','source_line','file_type','label']+[f'{trial}:{value}' for trial in predictions for value in ('probability','outcome')]
             writer=csv.DictWriter(stream,fieldnames=fields);writer.writeheader()
             from .reporting import prediction_outcome
             for index,row in enumerate(rows[split]):
-                entry={key:row[key] for key in ('sha256','source_file','source_line','label')}
+                entry={key:row[key] for key in ('sha256','source_file','source_line','file_type','label')}
                 for trial,(scores,threshold) in predictions.items():
                     entry[f'{trial}:probability']=float(scores[index]);entry[f'{trial}:outcome']=prediction_outcome(row['label'],scores[index],threshold)
                 writer.writerow(entry)
@@ -257,6 +267,18 @@ def run_benchmark(settings, output):
             if 'rows' not in m: lines.append(f'| {trial}/{split}: not evaluated | — | — | — | — | — | — | — | — | — |');continue
             c=m['confusion']; values=[trial+'/'+split,str(m['rows'])]+[str(c[k]) for k in ('tp','tn','fp','fn')]+['N/A' if m[k] is None else f'{m[k]:.6f}' for k in ('recall','false_positive_rate','average_precision','brier_score')]
             lines.append('| '+' | '.join(values)+' |')
+    lines += ['', '## Held-out results by file type', '',
+              '| Trial / split / type | n | TP | TN | FP | FN | Recall | FPR | AP |',
+              '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
+    for trial_id, result in results.items():
+        for split, metrics in result.items():
+            for kind, m in metrics.get('by_file_type', {}).items():
+                name = trial_id+'/'+split+'/'+kind
+                if 'rows' not in m:
+                    lines.append('| '+name+' (not evaluated) | 0 | — | — | — | — | — | — | — |'); continue
+                values=[name,str(m['rows'])]+[str(m['confusion'][key]) for key in ('tp','tn','fp','fn')]
+                values += ['N/A' if m[key] is None else f'{m[key]:.6f}' for key in ('recall','false_positive_rate','average_precision')]
+                lines.append('| '+' | '.join(values)+' |')
     for trial_id, result in results.items():
         trial = next(item for item in trials if item['id'] == trial_id)
         depth = trial['algorithm']['tree_depth']

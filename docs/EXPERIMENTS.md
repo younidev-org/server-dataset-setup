@@ -20,10 +20,37 @@ The `{config}` placeholder forwards that exact configuration to download and
 benchmark steps. Commands remain fully controlled by `[[steps]]`. The old simple
 train/evaluate/compare workflow is still available in the root config.toml.
 
+## PDF and ELF experiments
+
+The main `configs/ember2024-subset.toml` now selects `file_types = ["PDF", "ELF"]`.
+It trains mixed-corpus models and reports pooled results plus separate PDF/ELF
+held-out metrics. The leaderboard still selects candidates on pooled validation
+AP; it does not secretly optimize a different model or threshold for each type.
+
+For ELF-only training and evaluation:
+
+```bash
+bash run_all.sh --config configs/ember2024-elf-subset.toml
+```
+
+For PDF-only, copy either config into ignored data/ and set `file_types = ["PDF"]`.
+Downloads reuse verified existing files and fetch only missing selected archives;
+ELF train/test are stored under data/datasets/ELF/. The shared challenge archive
+is filtered by record type during benchmarking. No original ELF binaries are
+retrieved. Existing local config copies retain their own file_types settings.
+
+Row limits apply to the combined selected corpus, not independently per type.
+Hash-priority sampling does not guarantee equal type counts. Inspect
+`audit.json` selected_file_type_counts; absent types are marked not evaluated,
+not assigned a score of zero. Test/challenge JSON metrics include `by_file_type`
+with confusion counts, ranking/calibration metrics and Wilson intervals. The
+Markdown report has a per-type table, and comparison CSVs include file_type.
+The old root-config simple workflow still defaults to PDF unless overridden.
+
 ## What you can choose
 
 - `benchmark.dataset`: currently only `"ember2024"` is supported. `variant` names
-  the corpus version, initially `"original-pdf-subset"`.
+  the corpus version, initially `"original-pdf-elf-subset"`.
 - `file_types`: any subset of PDF, ELF, APK, Win32, Win64, Dot_Net. Downloads fetch
   those train/test archives and the shared challenge archive. Benchmark challenge
   rows are filtered by file-type metadata; unidentified rows are excluded and
