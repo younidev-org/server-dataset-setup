@@ -64,7 +64,7 @@ def resolve_xgboost_device(requested, threads):
             return dict(info, resolved=resolved, reason='CUDA training probe succeeded')
         reason = '; '.join(str(item.message) for item in messages) or 'XGBoost selected CPU during CUDA probe'
     except xgb.core.XGBoostError as exc:
-        reason = str(exc).splitlines()[0]
+        reason = str(exc).split('Stack trace:')[0].strip()
     if requested != 'auto':
         raise RuntimeError(f'CUDA requested but unavailable: {reason}')
     return dict(info, reason=reason)

@@ -17,7 +17,7 @@ class XGBoostTest(unittest.TestCase):
         import xgboost as xgb
         device = resolve_xgboost_device('auto', 1)
         if not device['resolved'].startswith('cuda'):
-            self.skipTest('No usable CUDA GPU in this machine')
+            self.skipTest('CUDA training unavailable: ' + device['reason'])
         matrix = xgb.DMatrix(np.array([[0], [0], [1], [1]], dtype=np.float32), label=[0, 0, 1, 1])
         model = xgb.train({'device': device['resolved'], 'tree_method': 'hist', 'nthread': 1,
                            'objective': 'binary:logistic'}, matrix, num_boost_round=2)

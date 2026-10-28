@@ -372,3 +372,19 @@ archive. Missing or changed files trigger repair of the affected archive. Existi
 data from before these manifests were introduced needs one archive verification
 and extraction run to establish completeness. Use `download --force` to explicitly
 recheck and extract again. Training/evaluation steps still run when enabled in TOML.
+
+## GTX 1050 and CUDA diagnostics
+
+GTX 1050 is a Pascal GPU (compute capability 6.1). XGBoost is pinned to 3.0.5
+whose documented GPU requirements include this architecture; newer CUDA 13
+builds can exclude Pascal. A compatible NVIDIA host driver and GPU visibility
+inside the server/container are still necessary. Setup satisfies this corrected
+version requirement without a forced reinstall or explicit uninstall step.
+
+After pulling, run `bash scripts/server.sh setup`, then
+`bash scripts/server.sh gpu`. The diagnostic prints the installed XGBoost
+version/build, NVIDIA driver/card visibility, and actual CUDA probe failure
+reason. A failed probe means CUDA is unusable in that process, not that the
+machine has no physical GPU. Use `--device cuda` for training to require GPU
+execution rather than allowing CPU fallback. GTX 1050 VRAM is limited: reduce
+evaluation batch size if needed; full training can still exceed GPU memory.
