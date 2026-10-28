@@ -7,7 +7,7 @@ import unittest
 
 from thrember import PEFeatureExtractor
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class EvaluationTest(unittest.TestCase):
@@ -69,6 +69,8 @@ class EvaluationTest(unittest.TestCase):
             ], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             report = json.loads((report_dir / 'evaluation.json').read_text())
+            self.assertGreater(report['algorithm']['number_of_trees'], 0)
+            self.assertIn('tree_depth', report['algorithm'])
             self.assertEqual(report['splits']['test']['rows'], 8)
             self.assertEqual(report['splits']['challenge']['rows'], 6)
             self.assertIsNone(report['splits']['challenge']['roc_auc'])

@@ -12,13 +12,14 @@ import zipfile
 import lightgbm as lgb
 from thrember import PEFeatureExtractor
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class TrainingTest(unittest.TestCase):
     def test_default_paths_keep_training_artifacts_under_data(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
+            shutil.copytree(ROOT / 'dataset_hub', folder / 'dataset_hub', ignore=shutil.ignore_patterns('__pycache__'))
             shutil.copy2(ROOT / 'train.py', folder / 'train.py')
             shutil.copy2(ROOT / 'experiment.py', folder / 'experiment.py')
             shutil.copy2(ROOT / 'configuration.py', folder / 'configuration.py')

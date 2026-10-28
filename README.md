@@ -102,7 +102,7 @@ evaluate.py                 held-out evaluation with JSON/Markdown reports
 compare.py                  matched-sample LightGBM vs XGBoost comparison
 requirements.txt           Python dependencies
 vendor/EMBER2024/           bundled upstream source and Apache 2.0 license
-test_scripts.py            functional tests
+tests/                     functional and unit tests
 data/                      ignored; never commit this directory
   datasets/PDF/            downloaded PDF train and test JSONL files
   datasets/challenge/      shared upstream challenge JSONL files
@@ -415,3 +415,23 @@ retain `run.json` with failed status and any reports already produced. Datasets
 and model locations remain shared, so existing downloads are reused; model hashes
 in the reports identify which model was evaluated. Standalone evaluate/compare
 commands continue to use `[paths].report_root` unless explicitly overridden.
+
+## Python layout and algorithm inspection
+
+Implementation modules are grouped in `dataset_hub/`: training, evaluation,
+comparison, download, configuration, execution, reporting and provenance.
+`dataset_hub/model_details.py` inspects the actual fitted trees. Tests are under
+`tests/`. Small root-level entry points preserve existing Python imports, Bash
+commands and TOML step commands. Keep using `bash scripts/server.sh test` to run
+all tests, or `python -m unittest tests.test_model_details -v` for structure tests.
+
+Individual evaluation and comparison reports now include actual tree counts,
+actual boosting rounds, objective, observed depth range/mean, and verified
+training parameters when available. Evaluation JSON includes per-tree depths,
+leaf counts and the loaded model configuration. A tree's depth is the number of
+edges from its root to the deepest leaf (zero for a constant tree). Observed
+structure is distinct from configured maximum depth and requested boosting
+rounds. In particular, XGBoost's configuration after loading a model can contain
+runtime defaults: it is labeled separately and does not replace original verified
+training parameters. Existing models can be evaluated again to produce these
+reports; training need not be repeated just to inspect their structure.

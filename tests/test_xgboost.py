@@ -7,7 +7,7 @@ import unittest
 
 from thrember import PEFeatureExtractor
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class XGBoostTest(unittest.TestCase):
@@ -78,6 +78,8 @@ class XGBoostTest(unittest.TestCase):
             self.assertEqual(evaluated.returncode, 0, evaluated.stdout + evaluated.stderr)
             report = json.loads((reports / 'evaluation.json').read_text())
             self.assertEqual(report['backend'], 'xgboost')
+            self.assertEqual(report['algorithm']['number_of_trees'], 3)
+            self.assertLessEqual(report['algorithm']['tree_depth']['max'], 6)
             self.assertEqual(report['splits']['test']['rows'], 12)
             self.assertEqual(report['splits']['test']['roc_auc'], 1.0)
             self.assertEqual(report['training_metadata_status'], 'verified_model_hash')
