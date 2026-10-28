@@ -11,7 +11,7 @@ DEFAULTS = {
     'runtime': {'threads': 10, 'xgboost_device': 'auto'},
     'training': {'rounds': 500, 'seed': 0},
     'evaluation': {'threshold': 0.5, 'batch_size': 1024},
-    'paths': {'data_dir': 'data/datasets', 'model_root': 'data/models', 'report_root': 'data/reports'},
+    'paths': {'data_dir': 'data/datasets', 'model_root': 'data/models', 'report_root': 'data/reports', 'run_root': 'data/runs'},
     'steps': [],
 }
 

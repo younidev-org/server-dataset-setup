@@ -14,7 +14,8 @@ batch_size = 1024
 [paths]
 data_dir = "data/datasets"
 model_root = "data/models"
-report_root = "data/reports"
+report_root = "data/reports"  # Standalone commands; batches override this per run.
+run_root = "data/runs"
 
 # The executor runs ONLY enabled commands below, in order. Reorder/add/remove
 # tables to change the workflow. A local [[steps]] list replaces this entire list.

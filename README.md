@@ -388,3 +388,30 @@ reason. A failed probe means CUDA is unusable in that process, not that the
 machine has no physical GPU. Use `--device cuda` for training to require GPU
 execution rather than allowing CPU fallback. GTX 1050 VRAM is limited: reduce
 evaluation batch size if needed; full training can still exceed GPU memory.
+
+## Separate reports for each batch run
+
+Each `bash run_all.sh` execution creates a unique UTC timestamp/ID directory:
+
+```text
+data/runs/20261028T150000Z-a1b2c3d4/
+  run.json                  settings, expanded commands, run status
+  reports/
+    download.json
+    evaluation.md           LightGBM report and associated figures/CSVs
+    evaluation.json
+    xgboost/                XGBoost report, figures and CSVs
+    comparison/             paired comparison report, figures and CSVs
+```
+
+Reports from earlier batches are preserved. Paths in Markdown to figures and CSVs
+remain relative to their report directory. `[paths].run_root` changes the parent
+folder; `{run_dir}` and `{run_id}` are also available in custom TOML commands.
+Batch `{report_root}` resolves to the current run's `reports/` folder, including
+for existing local configs that use that placeholder. Hardcoded output paths in
+custom commands remain under your control; use the placeholders for isolation.
+Dry runs create no run directory. Empty workflows create none. Failed batches
+retain `run.json` with failed status and any reports already produced. Datasets
+and model locations remain shared, so existing downloads are reused; model hashes
+in the reports identify which model was evaluated. Standalone evaluate/compare
+commands continue to use `[paths].report_root` unless explicitly overridden.

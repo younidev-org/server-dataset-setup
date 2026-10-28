@@ -10,6 +10,26 @@ ROOT = Path(__file__).resolve().parent
 
 
 class ConfigurationTest(unittest.TestCase):
+    def test_each_batch_keeps_reports_in_a_distinct_run_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            script = root / 'report.py'
+            script.write_text('import pathlib, sys\np=pathlib.Path(sys.argv[1]); p.mkdir(parents=True, exist_ok=True)\n(p/"report.txt").write_text("report")\n')
+            runs = root / 'runs'
+            config = root / 'run.toml'
+            command = [sys.executable, str(script), '{report_root}']
+            config.write_text('[paths]\nrun_root = ' + json.dumps(str(runs)) + '\n'
+                              '[[steps]]\nname = "Report"\ncommand = ' + json.dumps(command) + '\n')
+            for _ in range(2):
+                result = subprocess.run(['bash', str(ROOT / 'run_all.sh'), '--config', str(config)],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            directories = list(runs.iterdir())
+            self.assertEqual(len(directories), 2)
+            for directory in directories:
+                self.assertEqual((directory / 'reports/report.txt').read_text(), 'report')
+                self.assertEqual(json.loads((directory / 'run.json').read_text())['status'], 'completed')
+
     def test_local_override_preserves_shared_defaults(self):
         from configuration import load_config
         with tempfile.TemporaryDirectory() as folder:
@@ -84,7 +104,7 @@ class ConfigurationTest(unittest.TestCase):
             script.write_text('import pathlib, sys\npathlib.Path(sys.argv[1]).write_text(sys.argv[2])\n')
             config = root / 'custom.toml'
             arguments = [sys.executable, str(script), str(marker), 'literal ; $(not-a-shell)']
-            config.write_text('[[steps]]\nname = "Custom command"\ncommand = ' + json.dumps(arguments) + '\n'
+            config.write_text('[paths]\nrun_root = ' + json.dumps(str(root / 'runs')) + '\n[[steps]]\nname = "Custom command"\ncommand = ' + json.dumps(arguments) + '\n'
                               '[[steps]]\nname = "Disabled"\nenabled = false\ncommand = ["must-not-execute"]\n')
             preview = subprocess.run(['bash', str(ROOT / 'run_all.sh'), '--config', str(config), '--dry-run'],
                                      capture_output=True, text=True, cwd='/tmp')
