@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 
 from experiment import sha256_file
+from configuration import command_config
 from reporting import classification_metrics, format_number, prediction_outcome
 import matplotlib.pyplot as plt
 from sklearn.metrics import precision_recall_curve, roc_curve
@@ -218,9 +219,11 @@ def compare_reports(lightgbm_path, xgboost_path, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--lightgbm-report', type=Path, default=ROOT / 'data/reports/evaluation.json')
-    parser.add_argument('--xgboost-report', type=Path, default=ROOT / 'data/reports/xgboost/evaluation.json')
-    parser.add_argument('--output-dir', type=Path, default=ROOT / 'data/reports/comparison')
+    config = command_config(parser)
+    report_root = ROOT / config['paths']['report_root']
+    parser.add_argument('--lightgbm-report', type=Path, default=report_root / 'evaluation.json')
+    parser.add_argument('--xgboost-report', type=Path, default=report_root / 'xgboost/evaluation.json')
+    parser.add_argument('--output-dir', type=Path, default=report_root / 'comparison')
     args = parser.parse_args()
     compare_reports(args.lightgbm_report, args.xgboost_report, args.output_dir)
     print(f'Comparison report and per-file CSVs: {args.output_dir.resolve()}', flush=True)

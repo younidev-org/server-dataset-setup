@@ -1,0 +1,60 @@
+# Shared defaults. Server-only overrides belong in ignored data/config.toml.
+[runtime]
+threads = 10                  # Positive integer, or "auto" for available CPU affinity.
+xgboost_device = "auto"        # auto, cpu, cuda, or cuda:N. cuda requires a usable GPU.
+
+[training]
+rounds = 500
+seed = 0
+
+[evaluation]
+threshold = 0.5
+batch_size = 1024
+
+[paths]
+data_dir = "data/datasets"
+model_root = "data/models"
+report_root = "data/reports"
+
+# The executor runs ONLY enabled commands below, in order. Reorder/add/remove
+# tables to change the workflow. A local [[steps]] list replaces this entire list.
+# Commands are argument arrays, not shell strings. No implicit shell expansion.
+[[steps]]
+name = "Install or refresh dependencies"
+enabled = true
+command = ["bash", "{server}", "setup"]
+
+[[steps]]
+name = "Validate environment"
+enabled = true
+command = ["bash", "{server}", "test"]
+
+[[steps]]
+name = "Download PDF train/test and shared challenge features"
+enabled = true
+command = ["bash", "{server}", "download", "--data-dir", "{data_dir}", "--report-dir", "{report_root}"]
+
+[[steps]]
+name = "Train LightGBM"
+enabled = true
+command = ["bash", "{server}", "train", "--backend", "lightgbm", "--threads", "{threads}", "--rounds", "{rounds}", "--seed", "{seed}", "--data-dir", "{data_dir}", "--output-dir", "{lightgbm_model_dir}"]
+
+[[steps]]
+name = "Evaluate LightGBM"
+enabled = true
+command = ["bash", "{server}", "evaluate", "--backend", "lightgbm", "--threads", "{threads}", "--threshold", "{threshold}", "--batch-size", "{batch_size}", "--data-dir", "{data_dir}", "--model", "{lightgbm_model}", "--report-dir", "{report_root}"]
+
+[[steps]]
+name = "Train XGBoost"
+enabled = true
+command = ["bash", "{server}", "train", "--backend", "xgboost", "--threads", "{threads}", "--device", "{xgboost_device}", "--rounds", "{rounds}", "--seed", "{seed}", "--data-dir", "{data_dir}", "--output-dir", "{xgboost_model_dir}"]
+
+[[steps]]
+name = "Evaluate XGBoost"
+enabled = true
+command = ["bash", "{server}", "evaluate", "--backend", "xgboost", "--threads", "{threads}", "--device", "{xgboost_device}", "--threshold", "{threshold}", "--batch-size", "{batch_size}", "--data-dir", "{data_dir}", "--model", "{xgboost_model}", "--report-dir", "{xgboost_report_dir}"]
+
+[[steps]]
+name = "Compare per-file detections and errors"
+enabled = true
+command = ["bash", "{server}", "compare", "--lightgbm-report", "{lightgbm_report}", "--xgboost-report", "{xgboost_report}", "--output-dir", "{comparison_dir}"]

@@ -11,6 +11,7 @@ import time
 import sys
 
 from experiment import input_manifest, manifest_sha256, sha256_file, software_versions, resolve_xgboost_device
+from configuration import command_config
 
 import lightgbm as lgb
 import numpy as np
@@ -42,14 +43,17 @@ def training_records(paths, statistics=None, with_source=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    config = command_config(parser)
     parser.add_argument('--backend', choices=['lightgbm', 'xgboost'], default='lightgbm')
-    parser.add_argument('--data-dir', type=Path, default=ROOT / 'data' / 'datasets')
+    parser.add_argument('--data-dir', type=Path, default=ROOT / config['paths']['data_dir'])
     parser.add_argument('--output-dir', type=Path)
-    parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--rounds', type=int, default=500)
-    parser.add_argument('--threads', type=int, default=16, help='CPU threads (default: 16; 0 uses all cores)')
-    parser.add_argument('--device', default='auto', help='XGBoost: auto, cpu, cuda, or cuda:N')
+    parser.add_argument('--seed', type=int, default=config['training']['seed'])
+    parser.add_argument('--rounds', type=int, default=config['training']['rounds'])
+    parser.add_argument('--threads', type=int, default=config['runtime']['threads'], help='CPU threads (TOML default: 10; 0 uses all cores)')
+    parser.add_argument('--device', default=None, help='XGBoost: auto, cpu, cuda, or cuda:N')
     args = parser.parse_args()
+    if args.device is None:
+        args.device = config['runtime']['xgboost_device'] if args.backend == 'xgboost' else 'cpu'
     started = time.perf_counter()
     if args.rounds < 1 or args.threads < 0:
         parser.error('--rounds must be positive; --threads must be nonnegative')
@@ -70,7 +74,7 @@ def main():
         parser.error(f'Training requires both benign (0) and malicious (1) rows: {dict(labels)}')
     rows = sum(labels.values())
     extractor = PEFeatureExtractor()
-    output = (args.output_dir or ROOT / 'data/models' / (
+    output = (args.output_dir or ROOT / config['paths']['model_root'] / (
         'ember2024' if args.backend == 'lightgbm' else 'ember2024-xgboost')).resolve()
     model_name = 'model.txt' if args.backend == 'lightgbm' else 'model.ubj'
     output.mkdir(parents=True, exist_ok=True)

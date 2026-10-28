@@ -21,6 +21,8 @@ class TrainingTest(unittest.TestCase):
             folder = Path(folder)
             shutil.copy2(ROOT / 'train.py', folder / 'train.py')
             shutil.copy2(ROOT / 'experiment.py', folder / 'experiment.py')
+            shutil.copy2(ROOT / 'configuration.py', folder / 'configuration.py')
+            (folder / 'config.toml').write_text('[runtime]\nthreads = 7\n[training]\nrounds = 9\n')
             dataset = folder / 'data/datasets/PDF/sample_train.jsonl'
             dataset.parent.mkdir(parents=True)
             extractor = PEFeatureExtractor()
@@ -39,6 +41,8 @@ class TrainingTest(unittest.TestCase):
             self.assertEqual(model.num_feature(), 2568)
             report = json.loads((model_path.parent / 'training.json').read_text())
             self.assertEqual(report['rows'], 40)
+            self.assertEqual(report['parameters']['num_threads'], 1)
+            self.assertEqual(report['rounds'], 2)
             self.assertFalse((folder / 'output').exists())
 
     def test_downloader_extracts_all_splits_and_reports_sources(self):

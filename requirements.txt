@@ -3,3 +3,4 @@
 signify==0.8.1
 # Full XGBoost supports CPU and NVIDIA CUDA; GPU drivers belong to the host.
 xgboost>=3.0,<4
+tomli>=2,<3; python_version < "3.11"

@@ -13,12 +13,14 @@ os.environ.setdefault('HF_HOME', str(ROOT / 'data' / 'cache' / 'huggingface'))
 os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
 
 from huggingface_hub import hf_hub_download
+from configuration import command_config
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--data-dir', type=Path, default=ROOT / 'data' / 'datasets')
-    parser.add_argument('--report-dir', type=Path, default=ROOT / 'data' / 'reports')
+    config = command_config(parser)
+    parser.add_argument('--data-dir', type=Path, default=ROOT / config['paths']['data_dir'])
+    parser.add_argument('--report-dir', type=Path, default=ROOT / config['paths']['report_root'])
     args = parser.parse_args()
     data = args.data_dir.resolve()
     downloads = []

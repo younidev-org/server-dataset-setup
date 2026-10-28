@@ -15,6 +15,7 @@ from thrember import PEFeatureExtractor
 from experiment import input_manifest, manifest_sha256, sha256_file, software_versions, resolve_xgboost_device
 from reporting import classification_metrics, markdown_report, save_figures, save_predictions
 from train import training_records
+from configuration import command_config
 
 ROOT = Path(__file__).resolve().parent
 
@@ -55,15 +56,18 @@ def evaluate_split(model, extractor, paths, batch_size, threads, threshold, back
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    config = command_config(parser)
     parser.add_argument('--backend', choices=['lightgbm', 'xgboost'], default='lightgbm')
-    parser.add_argument('--data-dir', type=Path, default=ROOT / 'data/datasets')
+    parser.add_argument('--data-dir', type=Path, default=ROOT / config['paths']['data_dir'])
     parser.add_argument('--model', type=Path)
     parser.add_argument('--report-dir', type=Path)
-    parser.add_argument('--threshold', type=float, default=0.5)
-    parser.add_argument('--batch-size', type=int, default=1024)
-    parser.add_argument('--threads', type=int, default=16)
-    parser.add_argument('--device', default='auto', help='XGBoost: auto, cpu, cuda, or cuda:N')
+    parser.add_argument('--threshold', type=float, default=config['evaluation']['threshold'])
+    parser.add_argument('--batch-size', type=int, default=config['evaluation']['batch_size'])
+    parser.add_argument('--threads', type=int, default=config['runtime']['threads'])
+    parser.add_argument('--device', default=None, help='XGBoost: auto, cpu, cuda, or cuda:N')
     args = parser.parse_args()
+    if args.device is None:
+        args.device = config['runtime']['xgboost_device'] if args.backend == 'xgboost' else 'cpu'
     started = time.perf_counter()
     if not 0 <= args.threshold <= 1 or args.batch_size < 1 or args.threads < 1:
         parser.error('threshold must be between 0 and 1; batch-size and threads must be positive')
@@ -73,10 +77,10 @@ def main():
                    else {'requested': args.device, 'resolved': 'cpu', 'reason': 'LightGBM CPU backend'})
     print(f'Using {args.threads} CPU threads; device: {device_info["resolved"]} ({device_info["reason"]})', flush=True)
     if args.model is None:
-        args.model = ROOT / 'data/models' / ('ember2024/model.txt' if args.backend == 'lightgbm' else 'ember2024-xgboost/model.ubj')
+        args.model = ROOT / config['paths']['model_root'] / ('ember2024/model.txt' if args.backend == 'lightgbm' else 'ember2024-xgboost/model.ubj')
     if args.report_dir is None:
         # Preserve existing LightGBM report paths; keep XGBoost results separate.
-        args.report_dir = ROOT / 'data/reports' / ('' if args.backend == 'lightgbm' else 'xgboost')
+        args.report_dir = ROOT / config['paths']['report_root'] / ('' if args.backend == 'lightgbm' else 'xgboost')
     data = args.data_dir.resolve()
     split_paths = {
         'test': sorted(path for path in data.rglob('*_test.jsonl') if path.is_file() and 'challenge' not in path.name.lower()),

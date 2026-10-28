@@ -4,10 +4,98 @@ This repository distributes server setup and training scripts. Develop and publi
 changes from a development machine; the server only needs read access and pulls
 updates. Server data and generated artifacts stay local under ignored `data/`.
 
+## Run everything from TOML
+
+After pulling the repository, one command executes the configured workflow:
+
+```bash
+bash run_all.sh
+```
+
+`config.toml` defines both shared settings and the exact commands to run. The
+default steps install dependencies, run tests, download PDF train/test and the
+shared challenge features, train/evaluate LightGBM, train/evaluate XGBoost,
+and build the comparison. Steps run sequentially; any failed command stops the
+batch and its nonzero exit code is returned. Each stage is printed as it starts.
+No Git pull or push is performed by the launcher.
+
+For server-specific settings and commands, copy the config into ignored `data/`:
+
+```bash
+mkdir -p data
+cp config.toml data/config.toml
+```
+
+Edit `data/config.toml` without affecting future Git pulls. For example:
+
+```toml
+[runtime]
+threads = 10                 # Or "auto" to use available CPU affinity.
+xgboost_device = "auto"       # Use "cuda" to require GPU, or "cpu" to force CPU.
+
+[training]
+rounds = 500
+seed = 0
+```
+
+Each `[[steps]]` table controls an actual command. Reorder the tables, remove
+steps, edit argument arrays, or set `enabled = false` to skip a step. For example,
+this workflow runs evaluation and comparison only, using existing models/data:
+
+```toml
+[[steps]]
+name = "Evaluate LightGBM"
+enabled = true
+command = ["bash", "{server}", "evaluate", "--backend", "lightgbm", "--threads", "{threads}"]
+
+[[steps]]
+name = "Evaluate XGBoost"
+enabled = true
+command = ["bash", "{server}", "evaluate", "--backend", "xgboost", "--threads", "{threads}", "--device", "{xgboost_device}"]
+
+[[steps]]
+name = "Compare results"
+enabled = true
+command = ["bash", "{server}", "compare"]
+```
+
+Commands are argument arrays, executed directly without implicit shell expansion.
+For custom shell logic, put it in a Bash script and list that script as a command.
+Placeholders include `{root}`, `{server}`, `{python}`, `{threads}`, `{rounds}`,
+`{seed}`, `{xgboost_device}`, `{threshold}`, `{batch_size}`, `{data_dir}`,
+`{model_root}`, `{report_root}`, and model/report paths used in the shipped config.
+`{python}` points at `data/venv/bin/python` and needs setup to have run. Literal
+braces inside arguments must be doubled (`{{` and `}}`).
+
+Preview the exact commands without executing workflow steps, or select another
+config:
+
+```bash
+bash run_all.sh --dry-run
+bash run_all.sh --config data/my-experiment.toml
+```
+
+Settings merge in this order: built-in defaults, shared `config.toml`, then
+`data/config.toml` if present. An explicit `--config` replaces the local override.
+An override's `[[steps]]` list replaces the entire shared step list. Individual
+scripts also accept `--config`; explicit CLI options such as `--threads 6` take
+precedence over TOML settings. Paths in `[paths]` are relative to the checkout,
+and custom output paths should remain under ignored `data/`.
+
+The launcher uses Python's built-in TOML parser on Python 3.11+. For Python 3.10,
+if no parser is already available, it bootstraps only `tomli` into ignored
+`data/bootstrap/`; all workflow commands still come from the TOML file. Disabling
+the setup step assumes its dependencies are already installed. Disabling a
+download assumes all required splits are already present. Repeated enabled
+training steps retrain the models and replace their outputs.
+
 ## Layout
 
 ```text
 scripts/server.sh           setup, tests, download, training, and evaluation
+run_all.sh                  one-command launcher for the TOML workflow
+config.toml                 settings and ordered [[steps]] command arrays
+pipeline.py                 executor with preview and fail-fast behavior
 train.py                   binary LightGBM or CPU/CUDA XGBoost training
 download_pdf.py             PDF train/test and shared challenge downloader
 evaluate.py                 held-out evaluation with JSON/Markdown reports
@@ -74,8 +162,8 @@ before updating scripts or dependencies. No background service is required.
 
 ```bash
 bash scripts/server.sh download
-bash scripts/server.sh train --threads 16 --rounds 500
-bash scripts/server.sh evaluate --threads 16
+bash scripts/server.sh train --threads 10 --rounds 500
+bash scripts/server.sh evaluate --threads 10
 ```
 
 ## XGBoost on the same dataset
@@ -83,17 +171,17 @@ bash scripts/server.sh evaluate --threads 16
 After the same download, run:
 
 ```bash
-bash scripts/server.sh train --backend xgboost --threads 16 --rounds 500 --seed 0
-bash scripts/server.sh evaluate --backend xgboost --threads 16
+bash scripts/server.sh train --backend xgboost --threads 10 --rounds 500 --seed 0
+bash scripts/server.sh evaluate --backend xgboost --threads 10
 ```
 
-Training and evaluation now default to **16 CPU threads**. XGBoost defaults to
+Training and evaluation now default to **10 CPU threads**. XGBoost defaults to
 `--device auto`: it runs a small CUDA training probe and selects a usable GPU,
 or reports why it selected CPU. To require the selected NVIDIA GPU explicitly:
 
 ```bash
-bash scripts/server.sh train --backend xgboost --threads 16 --device cuda
-bash scripts/server.sh evaluate --backend xgboost --threads 16 --device cuda
+bash scripts/server.sh train --backend xgboost --threads 10 --device cuda
+bash scripts/server.sh evaluate --backend xgboost --threads 10 --device cuda
 ```
 
 `--device cuda:1` selects GPU 1 among the devices visible to the process;
@@ -117,10 +205,10 @@ For repeatable baseline runs, record the seed and use the same inputs, fixed
 threshold, and thread budget for both models:
 
 ```bash
-bash scripts/server.sh train --backend lightgbm --threads 16 --rounds 500 --seed 0
-bash scripts/server.sh evaluate --backend lightgbm --threads 16
-bash scripts/server.sh train --backend xgboost --threads 16 --rounds 500 --seed 0
-bash scripts/server.sh evaluate --backend xgboost --threads 16
+bash scripts/server.sh train --backend lightgbm --threads 10 --rounds 500 --seed 0
+bash scripts/server.sh evaluate --backend lightgbm --threads 10
+bash scripts/server.sh train --backend xgboost --threads 10 --rounds 500 --seed 0
+bash scripts/server.sh evaluate --backend xgboost --threads 10
 bash scripts/server.sh compare
 ```
 
@@ -256,7 +344,7 @@ if a later run fails.
 
 Full training needs about 10 KB of temporary disk per labeled row plus RAM for
 LightGBM; check disk and memory before large runs. Defaults are 500 boosting
-rounds and 16 CPU threads; override with `--threads` when needed. Optional overrides
+rounds and 10 CPU threads; override with `--threads` when needed. Optional overrides
 are `download --data-dir PATH` and `train --data-dir PATH --output-dir PATH`;
 keep overrides under `data/` to preserve this layout. Paths default relative
 to the repository, regardless of the caller's working directory.
